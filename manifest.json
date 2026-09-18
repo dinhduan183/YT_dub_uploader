@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "YT Dub Uploader",
+  "version": "2.0",
+  "description": "Trợ giúp thêm dub thủ công - chỉ mở dialog, bạn làm phần còn lại",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "sidePanel",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://studio.youtube.com/*"
+  ],
+  "icons": {
+    "16": "icon.png",
+    "32": "icon.png",
+    "48": "icon.png",
+    "128": "icon.png"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "action": {
+    "default_title": "Mở YT Dub Uploader",
+    "default_icon": {
+      "16": "icon.png",
+      "32": "icon.png",
+      "48": "icon.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
+}

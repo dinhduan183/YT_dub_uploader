@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>YT Dub Uploader</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        
+        html, body {
+            height: 100%;
+            overflow: hidden;
+        }
+        
+        body { 
+            font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 8px;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .container {
+            background: rgba(255,255,255,0.95);
+            border-radius: 12px;
+            padding: 10px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+            display: flex;
+            flex-direction: column;
+            flex: 1;
+            overflow: hidden;
+        }
+        
+        .header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #eee;
+            flex-shrink: 0;
+        }
+        .header-icon { font-size: 20px; }
+        .header-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: #1a1a2e;
+        }
+        
+        .status-box {
+            padding: 8px 10px;
+            border-radius: 8px;
+            margin-bottom: 8px;
+            font-size: 11px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-shrink: 0;
+        }
+        .status-ok { 
+            background: linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%);
+            color: #155724;
+        }
+        .status-warn { 
+            background: linear-gradient(135deg, #fff3cd 0%, #ffeeba 100%);
+            color: #856404;
+        }
+        
+        .section {
+            background: #f8f9fc;
+            border-radius: 10px;
+            padding: 10px;
+            margin-bottom: 8px;
+            flex-shrink: 0;
+        }
+        
+        .section.flex-grow {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            margin-bottom: 0;
+        }
+        
+        .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+            flex-shrink: 0;
+        }
+        .section-title {
+            font-size: 10px;
+            text-transform: uppercase;
+            color: #6c757d;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+        }
+        
+        .lang-toggle {
+            display: flex;
+            gap: 2px;
+            background: #e9ecef;
+            border-radius: 4px;
+            padding: 2px;
+        }
+        .toggle-btn {
+            background: transparent;
+            border: none;
+            color: #6c757d;
+            padding: 3px 10px;
+            font-size: 9px;
+            font-weight: 700;
+            border-radius: 3px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .toggle-btn:hover { background: rgba(102,126,234,0.1); color: #667eea; }
+        .toggle-btn.active {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        
+        .search-box input {
+            width: 100%;
+            padding: 7px 10px;
+            border: 1px solid #e9ecef;
+            border-radius: 6px;
+            font-size: 12px;
+            transition: all 0.2s;
+            background: white;
+        }
+        .search-box input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        .search-box input::placeholder { color: #adb5bd; }
+        
+        select {
+            width: 100%;
+            padding: 6px 8px;
+            border: 1px solid #e9ecef;
+            border-radius: 6px;
+            font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
+            font-size: 12px;
+            margin: 6px 0;
+            background: white;
+            cursor: pointer;
+            line-height: 1.4;
+        }
+        select:focus { outline: none; border-color: #667eea; }
+        select option {
+            padding: 8px;
+            font-size: 12px;
+        }
+        select option.lang-added { color: #adb5bd; }
+        
+        .btn {
+            padding: 8px 12px;
+            border: none;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 4px;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            width: 100%;
+        }
+        .btn-primary:hover { opacity: 0.9; }
+        .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
+        .btn-add-extra { white-space: nowrap; }
+        .btn-primary.btn-stop { background: linear-gradient(135deg, #e5534b 0%, #c0392b 100%); }
+        #btnRunAll { margin-bottom: 8px; flex-shrink: 0; }
+        
+        .btn-add {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 5px 10px;
+            font-size: 10px;
+        }
+        .btn-add:hover { opacity: 0.9; }
+        .btn-add:disabled {
+            background: #e9ecef;
+            color: #adb5bd;
+            cursor: not-allowed;
+        }
+        
+        .lang-actions {
+            display: flex;
+            gap: 4px;
+            flex-shrink: 0;
+        }
+        
+        .btn-remove {
+            background: transparent;
+            border: 1px solid #e9ecef;
+            color: #adb5bd;
+            padding: 5px 8px;
+            font-size: 10px;
+            border-radius: 4px;
+        }
+        .btn-remove:hover {
+            background: #dc3545;
+            border-color: #dc3545;
+            color: white;
+        }
+        
+        .toolbar {
+            display: flex;
+            gap: 4px;
+        }
+        .btn-tool {
+            background: white;
+            border: 1px solid #e9ecef;
+            border-radius: 6px;
+            font-size: 10px;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 4px;
+            padding: 5px 8px;
+            color: #6c757d;
+        }
+        .btn-tool:hover {
+            background: #667eea;
+            border-color: #667eea;
+            color: white;
+        }
+        .btn-tool:disabled,
+        .btn-tool:disabled:hover {
+            background: white;
+            border-color: #e9ecef;
+            color: #adb5bd;
+            cursor: not-allowed;
+        }
+
+        .run-notice {
+            background: #fff3cd;
+            color: #856404;
+            border-radius: 6px;
+            padding: 6px 8px;
+            font-size: 10px;
+            line-height: 1.4;
+            margin-bottom: 8px;
+            flex-shrink: 0;
+        }
+
+        .extra-box {
+            margin-top: 8px;
+            padding-top: 8px;
+            border-top: 1px dashed #ced4da;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .extra-note {
+            font-size: 10px;
+            line-height: 1.4;
+            color: #6c757d;
+            padding: 0 2px 2px;
+        }
+        .btn-tool svg {
+            width: 14px;
+            height: 14px;
+        }
+        
+        .audio-picker {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .audio-file-name {
+            flex: 1;
+            min-width: 0;
+            font-size: 11px;
+            color: #6c757d;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .lang-list {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            flex: 1;
+            overflow-y: auto;
+        }
+        .lang-list::-webkit-scrollbar { width: 4px; }
+        .lang-list::-webkit-scrollbar-track { background: transparent; }
+        .lang-list::-webkit-scrollbar-thumb { background: #ddd; border-radius: 2px; }
+        
+        .lang-item {
+            display: flex;
+            align-items: center;
+            padding: 6px 8px;
+            background: white;
+            border-radius: 6px;
+            border: 1px solid #e9ecef;
+            transition: all 0.2s;
+            flex-shrink: 0;
+        }
+        .lang-item:hover { border-color: #667eea; }
+        
+        .lang-info {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex: 1;
+            min-width: 0;
+        }
+        .lang-code {
+            font-family: 'SF Mono', Monaco, monospace;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 9px;
+            font-weight: 700;
+            flex-shrink: 0;
+        }
+        .lang-name {
+            font-size: 11px;
+            color: #1a1a2e;
+            font-weight: 500;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        
+        .lang-status {
+            font-size: 9px;
+            padding: 2px 6px;
+            border-radius: 10px;
+            font-weight: 600;
+            margin: 0 6px;
+            flex-shrink: 0;
+        }
+        .status-pending { background: #e9ecef; color: #6c757d; }
+        .status-processing { background: #fff3cd; color: #856404; animation: pulse 1.5s infinite; }
+        .status-done { background: #d4edda; color: #155724; }
+        .status-error { background: #f8d7da; color: #721c24; }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+        
+        .empty-state {
+            text-align: center;
+            padding: 20px 10px;
+            color: #adb5bd;
+            font-size: 12px;
+        }
+        .empty-state-icon {
+            font-size: 24px;
+            margin-bottom: 4px;
+            opacity: 0.5;
+        }
+        
+        .overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(255,255,255,0.8);
+            backdrop-filter: blur(5px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 100;
+            padding: 20px;
+        }
+        .overlay.hidden { display: none; }
+        .overlay-content {
+            background: white;
+            border-radius: 12px;
+            padding: 24px;
+            text-align: center;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.15);
+            max-width: 280px;
+        }
+        .overlay-icon {
+            font-size: 48px;
+            margin-bottom: 12px;
+        }
+        .overlay-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: #1a1a2e;
+            margin-bottom: 8px;
+        }
+        .overlay-text {
+            font-size: 12px;
+            color: #6c757d;
+            line-height: 1.5;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <span class="header-icon">🎙️</span>
+            <span class="header-title">YT Dub Uploader v2.0</span>
+        </div>
+        
+        <div id="statusBox" class="status-box status-warn">
+            <span>⏳</span>
+            <span>Đang kiểm tra...</span>
+        </div>
+        
+        <div class="section">
+            <div class="section-header">
+                <span class="section-title">Chọn ngôn ngữ</span>
+                <div class="lang-toggle">
+                    <button class="toggle-btn active" data-lang="vn">VI</button>
+                    <button class="toggle-btn" data-lang="en">EN</button>
+                </div>
+            </div>
+            <div class="search-box">
+                <input type="text" id="langSearch" placeholder="🔍 Tìm theo tên hoặc mã...">
+            </div>
+            <select id="langSelect" size="5"></select>
+            <button class="btn btn-primary" id="btnAddLang">➕ Thêm vào danh sách</button>
+        </div>
+
+        <div class="section">
+            <div class="section-header">
+                <span class="section-title">File âm thanh</span>
+            </div>
+            <div class="audio-picker">
+                <button class="btn-tool" id="btnPickAudio">🎵 Chọn file</button>
+                <span id="audioFileName" class="audio-file-name">Chưa chọn file</span>
+            </div>
+        </div>
+
+        <div class="section flex-grow">
+            <div class="section-header">
+                <span class="section-title">Danh sách ngôn ngữ</span>
+                <div class="toolbar">
+                    <button class="btn-tool" id="btnSync" title="Reload trạng thái từ YouTube">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 11-3-6.7M21 3v6h-6"/></svg>
+                        Reload
+                    </button>
+                    <button class="btn-tool" id="btnImport" title="Nhập danh sách">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14"/></svg>
+                    </button>
+                    <button class="btn-tool" id="btnExport" title="Xuất danh sách">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 21V9m0 0l4 4m-4-4l-4 4M5 3h14"/></svg>
+                    </button>
+                    <button class="btn-tool" id="btnClear" title="Xóa tất cả">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6h14"/></svg>
+                    </button>
+                </div>
+            </div>
+            <button class="btn btn-primary" id="btnRunAll">▶ Chạy tất cả</button>
+            <div id="runNotice" class="run-notice" hidden>⚠️ Giữ nguyên tab YouTube Studio này trong lúc chạy. Chuyển sang tab khác sẽ dừng.</div>
+            <div id="langList" class="lang-list">
+                <div class="empty-state">
+                    <div class="empty-state-icon">📋</div>
+                    <div>Chưa có ngôn ngữ nào</div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div id="overlay" class="overlay hidden">
+        <div class="overlay-content">
+            <div class="overlay-icon">🎬</div>
+            <div class="overlay-title">Vui lòng mở YouTube Studio</div>
+            <div class="overlay-text">Truy cập trang <strong>Translations</strong> của video để sử dụng tiện ích này.</div>
+        </div>
+    </div>
+    
+    <input type="file" id="importFile" accept=".json" style="display: none;">
+    <input type="file" id="audioFile" accept=".mp3,.wav,audio/*" style="display: none;">
+    <script src="languages.js"></script>
+    <script src="sidepanel.js"></script>
+</body>
+</html>
