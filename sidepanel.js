@@ -2,6 +2,7 @@ let selectedLangs = [];
 let detectedVideoId = null;
 let currentDisplayLang = 'vn'; // 'vn' hoặc 'en'
 let audioFile = null; // File âm thanh dùng chung cho mọi ngôn ngữ (chỉ giữ trong phiên)
+let descAudioFile = null; // File âm thanh mô tả dùng chung cho mọi ngôn ngữ (chỉ giữ trong phiên)
 let isRunningAll = false;
 let isAdding = false; // Đang thêm 1 ngôn ngữ (lẻ hoặc trong Chạy tất cả)
 let isSyncing = false;
@@ -108,6 +109,26 @@ function getYtBadge(ytStatus, ytText) {
     };
 }
 
+// Video mà danh sách đang phản ánh
+function currentVideoId() {
+    return runVideoId || detectedVideoId;
+}
+
+// Ngôn ngữ còn thiếu gì để bổ sung không (âm thanh gốc, hoặc âm thanh mô tả khi đã chọn file mô tả)
+function needsWork(item) {
+    if (item.ytStatus === 'error') return false; // Âm thanh gốc đã xoá / lỗi - tự xử lý trên Studio
+    if (!item.ytStatus) return item.status !== 'done' && item.status !== 'processing';
+    if (item.ytStatus === 'none') return true;
+    return !!descAudioFile && item.descVideoId !== currentVideoId();
+}
+
+// Ngôn ngữ đã có âm thanh gốc trên video
+function hasMainAudio(item) {
+    return item.ytStatus === 'published' || item.ytStatus === 'processing';
+}
+
+const DESC_NEEDS_MAIN_MSG = 'Âm thanh mô tả chỉ thêm được sau khi ngôn ngữ đã có âm thanh gốc.';
+
 function renderLangList() {
     const container = document.getElementById('langList');
 
@@ -137,9 +158,8 @@ function renderLangList() {
             statusClass = badge.cls;
         }
 
-        // Ngôn ngữ đã có trong bảng Bản dịch (đã xoá / lỗi / chưa có âm thanh) thì menu "Thêm ngôn ngữ"
-        // khoá mục đó, nên không thêm lại được - tự xử lý trên Studio
-        const disabled = item.status === 'processing' || item.status === 'done' || !!item.ytStatus;
+        const disabled = !needsWork(item);
+        const hasDesc = item.descVideoId && item.descVideoId === currentVideoId();
 
         return `
             <div class="lang-item">
@@ -148,6 +168,7 @@ function renderLangList() {
                     <span class="lang-name">${displayName}</span>
                 </div>
                 <span class="lang-status ${statusClass}">${statusText}</span>
+                ${hasDesc ? '<span class="lang-status status-done" title="Đã có âm thanh mô tả">Mô tả</span>' : ''}
                 <div class="lang-actions">
                     <button class="btn btn-add" data-index="${index}" ${disabled ? 'disabled' : ''}>Thêm</button>
                     <button class="btn btn-remove" data-index="${index}" title="Xóa khỏi danh sách">✕</button>
@@ -323,6 +344,19 @@ function setupEventListeners() {
         audioFile = file;
         document.getElementById('audioFileName').textContent = file.name;
     });
+
+    // Chọn file âm thanh mô tả
+    document.getElementById('btnPickDescAudio').addEventListener('click', () => {
+        document.getElementById('descAudioFile').click();
+    });
+
+    document.getElementById('descAudioFile').addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        descAudioFile = file;
+        document.getElementById('descAudioFileName').textContent = file.name;
+        renderLangList(); // Ngôn ngữ đã có âm thanh gốc giờ có thể bổ sung âm thanh mô tả
+    });
 }
 
 function readFileAsBase64(file) {
@@ -378,7 +412,8 @@ async function addDubForLang(index, tabId = null) {
 
     console.log('Starting addDubForLang for:', item.code, lang.name);
 
-    // Cập nhật trạng thái (bỏ trạng thái YouTube cũ, lần Reload sau sẽ lấy lại)
+    // Cập nhật trạng thái (bỏ trạng thái YouTube cũ, lần Reload sau sẽ lấy lại; lỗi thì trả lại như cũ)
+    const prev = { status: item.status, ytStatus: item.ytStatus, ytText: item.ytText };
     item.status = 'processing';
     item.ytStatus = null;
     item.ytText = '';
@@ -387,6 +422,7 @@ async function addDubForLang(index, tabId = null) {
     saveSelectedLangs();
     renderLangList();
 
+    const videoId = currentVideoId();
     let error = null;
     try {
         if (!tabId) {
@@ -408,16 +444,9 @@ async function addDubForLang(index, tabId = null) {
 
         await new Promise(resolve => setTimeout(resolve, 500));
 
-        // Gửi file âm thanh (nếu đã chọn) theo từng phần - Chrome giới hạn 64MiB mỗi tin nhắn
-        let audio = null;
-        if (audioFile) {
-            const data = await readFileAsBase64(audioFile);
-            await sendToTab(tabId, { action: 'audio_reset' });
-            for (let i = 0; i < data.length; i += AUDIO_CHUNK_SIZE) {
-                await sendToTab(tabId, { action: 'audio_chunk', data: data.slice(i, i + AUDIO_CHUNK_SIZE) });
-            }
-            audio = { name: audioFile.name, type: audioFile.type };
-        }
+        // Gửi file âm thanh gốc và mô tả (nếu đã chọn)
+        const audio = await sendAudioFile(tabId, 'main', audioFile);
+        const descAudio = await sendAudioFile(tabId, 'desc', descAudioFile);
 
         if (stopReason) throw new Error(stopReason);
 
@@ -427,7 +456,8 @@ async function addDubForLang(index, tabId = null) {
             langCode: item.code,
             langName: lang.name,
             langNameVn: lang.nameVn || lang.name,
-            audio: audio
+            audio: audio,
+            descAudio: descAudio
         });
         console.log('Response from content script:', response);
 
@@ -435,12 +465,16 @@ async function addDubForLang(index, tabId = null) {
             throw new Error(response ? response.error : 'Không nhận được phản hồi từ trang');
         }
 
-        if (response.alreadyOnVideo) {
-            // Ngôn ngữ đã có trên video (vd: vừa Lưu từ hộp thoại dở dang) → lấy trạng thái thật từ bảng
+        if (response.descState === 'present' || response.descState === 'added') {
+            item.descVideoId = videoId;
+        }
+
+        if (response.onVideo && !response.mainAdded) {
+            // Ngôn ngữ đã có trên video → lấy trạng thái thật từ bảng
             const row = await readRowOfLang(tabId, item.code, 0);
             if (!row) throw new Error(`Ngôn ngữ ${item.code} bị khoá trong menu nhưng không thấy trong bảng Bản dịch`);
             applyRowToItem(item, row);
-        } else if (audio) {
+        } else if (response.mainAdded) {
             // Vừa tải âm thanh → lấy trạng thái thật từ bảng (thường là Đang xử lý... %), không tự coi là xong
             const row = await readRowOfLang(tabId, item.code, 10000);
             if (row) {
@@ -453,9 +487,18 @@ async function addDubForLang(index, tabId = null) {
         } else {
             item.status = 'done';
         }
+
+        // Chỉ có file mô tả mà ngôn ngữ chưa có âm thanh gốc → hộp tải âm thanh gốc đang mở để chọn thủ công
+        if (descAudioFile && !audioFile && !response.mainAdded && response.descState === 'skipped' && !isRunningAll) {
+            alert(`${DESC_NEEDS_MAIN_MSG}\n\nHãy chọn file âm thanh gốc trong hộp thoại đang mở trên YouTube Studio và bấm Xuất bản, Cập nhật. Sau đó bấm Thêm lại để bổ sung âm thanh mô tả.`);
+        }
+
+        if (response.descState === 'blocked') {
+            throw new Error('Âm thanh gốc đã bị xoá / lỗi nên không thêm được âm thanh mô tả');
+        }
     } catch (e) {
         console.error('Error:', e);
-        item.status = 'pending';
+        Object.assign(item, prev.ytStatus ? prev : { status: 'pending' });
         error = e.message;
         // Đang Chạy tất cả (bỏ qua lỗi / dừng do chuyển tab) thì runAll báo ở cuối, không alert ở đây
         if (!isRunningAll) alert('Lỗi: ' + e.message);
@@ -481,14 +524,20 @@ function stopRun(reason) {
 async function runAll() {
     if (isBusy()) return;
 
-    if (!audioFile) {
+    if (!audioFile && !descAudioFile) {
         alert('Chọn file âm thanh trước khi chạy tất cả!');
         return;
     }
 
-    const queue = selectedLangs.filter(l => l.status !== 'done' && l.status !== 'processing' && !l.ytStatus);
+    // Chưa chọn file gốc → chỉ chạy ngôn ngữ đã có âm thanh gốc (để thêm âm thanh mô tả), ngôn ngữ còn lại giữ Chờ
+    const pending = selectedLangs.filter(needsWork);
+    const queue = audioFile ? pending : pending.filter(hasMainAudio);
+    const noMain = pending.filter(l => !queue.includes(l));
+    const noMainText = noMain.length
+        ? `\n\n⚠️ ${DESC_NEEDS_MAIN_MSG} Chưa chọn file âm thanh gốc nên đã bỏ qua ${noMain.length} ngôn ngữ chưa có âm thanh gốc (vẫn ở trạng thái Chờ):\n${noMain.map(l => `• ${l.code}`).join('\n')}`
+        : '';
     if (queue.length === 0) {
-        alert('Không còn ngôn ngữ nào cần chạy!');
+        alert(`Không còn ngôn ngữ nào cần chạy!${noMainText}`);
         return;
     }
 
@@ -540,12 +589,25 @@ async function runAll() {
     if (reason) {
         alert(`⛔ Đã dừng Chạy tất cả: ${reason}.\nCác ngôn ngữ chưa chạy vẫn ở trạng thái Chờ, bấm Chạy tất cả để chạy tiếp.${failedText}`);
     } else if (failed.length) {
-        alert(`Chạy tất cả đã xong.${failedText}\n\nBấm Chạy tất cả để thử lại các ngôn ngữ này.`);
+        alert(`Chạy tất cả đã xong.${failedText}\n\nBấm Chạy tất cả để thử lại các ngôn ngữ này.${noMainText}`);
+    } else if (noMain.length) {
+        alert(`Chạy tất cả đã xong.${noMainText}`);
     }
 }
 
 // Base64 chia phần, bội số của 4 để mỗi phần tự giải mã được
 const AUDIO_CHUNK_SIZE = 8 * 1024 * 1024;
+
+// Gửi file theo từng phần - Chrome giới hạn 64MiB mỗi tin nhắn. Trả về thông tin file, hoặc null nếu chưa chọn
+async function sendAudioFile(tabId, slot, file) {
+    if (!file) return null;
+    const data = await readFileAsBase64(file);
+    await sendToTab(tabId, { action: 'audio_reset', slot: slot });
+    for (let i = 0; i < data.length; i += AUDIO_CHUNK_SIZE) {
+        await sendToTab(tabId, { action: 'audio_chunk', slot: slot, data: data.slice(i, i + AUDIO_CHUNK_SIZE) });
+    }
+    return { name: file.name, type: file.type };
+}
 
 function sendToTab(tabId, message) {
     return new Promise((resolve, reject) => {

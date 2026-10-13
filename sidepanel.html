@@ -39,11 +39,19 @@
             border-bottom: 1px solid #eee;
             flex-shrink: 0;
         }
-        .header-icon { font-size: 20px; }
+        .header-icon { width: 24px; height: 24px; }
         .header-title {
-            font-size: 14px;
-            font-weight: 600;
+            font-size: 17px;
+            font-weight: 800;
             color: #1a1a2e;
+        }
+        .header-version {
+            font-size: 10px;
+            font-weight: 600;
+            color: #6c757d;
+            background: #eef0f3;
+            padding: 2px 6px;
+            border-radius: 8px;
         }
         
         .status-box {
@@ -410,8 +418,9 @@
 <body>
     <div class="container">
         <div class="header">
-            <span class="header-icon">🎙️</span>
-            <span class="header-title">YT Dub Uploader v2.1</span>
+            <img class="header-icon" src="new_icon_48.png" alt="">
+            <span class="header-title">YT Dub Uploader</span>
+            <span class="header-version">v3.0</span>
         </div>
         
         <div id="statusBox" class="status-box status-warn">
@@ -441,6 +450,10 @@
             <div class="audio-picker">
                 <button class="btn-tool" id="btnPickAudio">🎵 Chọn file</button>
                 <span id="audioFileName" class="audio-file-name">Chưa chọn file</span>
+            </div>
+            <div class="audio-picker" style="margin-top: 6px;">
+                <button class="btn-tool" id="btnPickDescAudio">🎧 Chọn file mô tả</button>
+                <span id="descAudioFileName" class="audio-file-name">Chưa chọn file</span>
             </div>
         </div>
 
@@ -484,6 +497,7 @@
     
     <input type="file" id="importFile" accept=".json" style="display: none;">
     <input type="file" id="audioFile" accept=".mp3,.wav,audio/*" style="display: none;">
+    <input type="file" id="descAudioFile" accept=".mp3,.wav,audio/*" style="display: none;">
     <script src="languages.js"></script>
     <script src="sidepanel.js"></script>
 </body>

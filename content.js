@@ -6,7 +6,7 @@ function sleep(ms) {
 // Message handler function
 function handleMessage(request, _sender, sendResponse) {
     if (request.action === "add_single_lang") {
-        addSingleLanguage(request.langCode, request.langName, request.langNameVn, request.audio)
+        addSingleLanguage(request.langCode, request.langName, request.langNameVn, request.audio, request.descAudio)
             .then((result) => sendResponse({ success: true, ...(result || {}) }))
             .catch((error) => {
                 console.error(error);
@@ -15,9 +15,10 @@ function handleMessage(request, _sender, sendResponse) {
         return true; // Keep channel open for async response
     }
     
-    // Nhận file âm thanh theo từng phần base64 từ side panel
+    // Nhận file âm thanh theo từng phần base64 từ side panel (slot: 'main' = âm thanh gốc, 'desc' = âm thanh mô tả)
     if (request.action === "audio_reset") {
-        window.manualDubAudioParts = [];
+        window.manualDubAudioParts = window.manualDubAudioParts || {};
+        window.manualDubAudioParts[request.slot] = [];
         sendResponse({ success: true });
         return;
     }
@@ -26,7 +27,7 @@ function handleMessage(request, _sender, sendResponse) {
         const bin = atob(request.data);
         const bytes = new Uint8Array(bin.length);
         for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-        window.manualDubAudioParts.push(bytes);
+        window.manualDubAudioParts[request.slot].push(bytes);
         sendResponse({ success: true });
         return;
     }
@@ -60,7 +61,10 @@ window.manualDubMessageHandler = handleMessage;
 chrome.runtime.onMessage.addListener(handleMessage);
 window.manualDubHelperLoaded = true;
 
-async function addSingleLanguage(code, name, nameVn, audio) {
+// Trả về { onVideo, mainAdded, descState }
+// onVideo: ngôn ngữ đã có trên video từ trước (mở hộp ngôn ngữ từ bảng Bản dịch)
+// descState: 'present' (đã có) / 'added' (vừa thêm) / 'blocked' (âm thanh gốc lỗi/đã xoá) / 'skipped' (không làm)
+async function addSingleLanguage(code, name, nameVn, audio, descAudio) {
     console.log(`Adding language: ${code} - ${nameVn}`);
     window.manualDubAbort = null;
 
@@ -89,6 +93,7 @@ async function addSingleLanguage(code, name, nameVn, audio) {
     // BƯỚC 2: Tìm và chọn ngôn ngữ theo test-id (code)
     const langItems = document.querySelectorAll('tp-yt-paper-item[test-id]');
     let found = false;
+    let onVideo = false;
     
     console.log(`Looking for language: ${code}, found ${langItems.length} items`);
     
@@ -98,13 +103,16 @@ async function addSingleLanguage(code, name, nameVn, audio) {
     for (const item of langItems) {
         const testId = item.getAttribute('test-id');
         if (testId === code) {
-            // Mục bị khoá = ngôn ngữ đã có trên video (vd: vừa Lưu từ hộp thoại dở dang) → không thêm lại
+            // Mục bị khoá = ngôn ngữ đã có trên video → mở hộp ngôn ngữ từ bảng Bản dịch để bổ sung phần còn thiếu
             if (isDisabled(item)) {
+                const textEl = item.querySelector('yt-formatted-string.item-text');
+                const displayName = (textEl ? textEl.textContent : item.textContent).trim();
                 await closeOpenDialogs();
-                console.log(`Ngôn ngữ ${code} đã có trên video - bỏ qua`);
-                return { alreadyOnVideo: true };
+                await openExistingLanguage(displayName, name, nameVn);
+                onVideo = true;
+            } else {
+                item.click();
             }
-            item.click();
             found = true;
             console.log(`Found and clicked: ${code}`);
             break;
@@ -131,27 +139,97 @@ async function addSingleLanguage(code, name, nameVn, audio) {
     if (!found) {
         throw new Error(`Không tìm thấy ngôn ngữ: ${nameVn} (${code})`);
     }
-    
-    // BƯỚC 3: Click nút "Add" ở dòng Dub - chờ nút hiện trong hộp ngôn ngữ vừa mở
-    const btnAddDub = await waitForElement(() =>
-        [...document.querySelectorAll('#language-details-text-button-audio, #language-details-text-button-dub')].find(isVisible));
-    if (!btnAddDub) {
-        throw new Error('Không tìm thấy nút Add Dub');
+
+    // BƯỚC 3: Chờ hộp ngôn ngữ hiện dòng Audio
+    const audioRowShown = await waitFor(() =>
+        isVisible(document.querySelector('#language-details-source-label-audio')), TIMEOUT);
+    if (!audioRowShown) {
+        throw new Error('Hộp ngôn ngữ không hiện ra');
     }
     await sleep(SETTLE);
 
-    // Click vào button thực sự bên trong ytcp-button
-    const innerBtn2 = btnAddDub.querySelector('button') || btnAddDub;
-    innerBtn2.click();
-    console.log('Clicked Add Dub - Dialog đã mở, bạn có thể chọn file');
+    // BƯỚC 4: Dòng Audio còn nút "Add" = chưa có âm thanh gốc
+    let mainAdded = false;
+    const btnAddDub = [...document.querySelectorAll('#language-details-text-button-audio, #language-details-text-button-dub')].find(isVisible);
+    if (btnAddDub) {
+        clickButton(btnAddDub);
+        console.log('Clicked Add Dub - Dialog đã mở, bạn có thể chọn file');
 
-    // BƯỚC 4: Nếu đã chọn file trong side panel → gán file và bấm Xuất bản
-    if (audio) {
-        await uploadAudio(audio);
+        // Chưa chọn file gốc → để hộp tải mở cho người dùng tự chọn
+        if (!audio) {
+            showNotification(nameVn, code);
+            return { onVideo, mainAdded, descState: 'skipped' };
+        }
+        await uploadAudio('main', audio);
+        mainAdded = true;
+    }
+
+    // BƯỚC 5: Âm thanh mô tả - chỉ thêm được qua menu ⋮ của dòng Audio sau khi đã có âm thanh gốc
+    let descState = 'skipped';
+    if (isVisible(document.querySelector('#language-details-source-label-descriptive-audio'))) {
+        descState = 'present';
+        console.log('Đã có âm thanh mô tả');
+    } else if (descAudio) {
+        descState = await addDescriptiveAudio(descAudio);
+    }
+
+    // BƯỚC 6: Có thay đổi thì bấm Cập nhật, không thì đóng hộp ngôn ngữ
+    if (mainAdded || descState === 'added') {
+        await clickUpdate();
+    } else {
+        await closeOpenDialogs();
     }
 
     // Hiển thị notification
     showNotification(nameVn, code);
+    return { onVideo, mainAdded, descState };
+}
+
+// Mở hộp ngôn ngữ của 1 ngôn ngữ đã có trên video bằng cách bấm tên ở bảng Bản dịch
+async function openExistingLanguage(displayName, name, nameVn) {
+    const names = [displayName, name, nameVn].filter(Boolean).map(n => n.trim().toLowerCase());
+    const btn = [...document.querySelectorAll('ytgn-video-translation-row .language-display-name')]
+        .find(el => names.includes(el.textContent.trim().toLowerCase()));
+    if (!btn) {
+        throw new Error(`Ngôn ngữ ${nameVn} bị khoá trong menu nhưng không thấy trong bảng Bản dịch`);
+    }
+    btn.click();
+    console.log('Mở hộp ngôn ngữ đã có:', displayName);
+}
+
+// Menu ⋮ của dòng Audio → "Add descriptive audio" → tải file mô tả
+async function addDescriptiveAudio(descAudio) {
+    const btnMore = await waitForElement(() => {
+        const el = document.querySelector('#language-details-more-options-button-audio');
+        return isVisible(el) ? el : null;
+    });
+    if (!btnMore) {
+        throw new Error('Không tìm thấy nút ⋮ ở dòng Audio');
+    }
+    clickButton(btnMore);
+
+    const menuItem = await waitForElement(() => {
+        const el = document.querySelector('tp-yt-paper-item[test-id="add_descriptive_audio_selection"]');
+        return isVisible(el) ? el : null;
+    }, 3000);
+    if (!menuItem) {
+        // Âm thanh gốc bị xoá / lỗi thì menu chỉ có Delete
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+        await sleep(SETTLE);
+        console.log('Menu không có Add descriptive audio');
+        return 'blocked';
+    }
+    menuItem.click();
+    console.log('Clicked Add descriptive audio');
+
+    await uploadAudio('desc', descAudio);
+
+    const shown = await waitFor(() =>
+        isVisible(document.querySelector('#language-details-source-label-descriptive-audio')), TIMEOUT);
+    if (!shown) {
+        throw new Error('Dòng Descriptive audio không hiện sau khi Xuất bản');
+    }
+    return 'added';
 }
 
 // Thời gian chờ tối đa cho mỗi phần tử, và khoảng nghỉ ngắn sau khi phần tử hiện ra
@@ -221,7 +299,7 @@ async function closeOpenDialogs() {
     await sleep(SETTLE);
 }
 
-async function uploadAudio(audio) {
+async function uploadAudio(slot, audio) {
     // Chờ hộp "Âm thanh bằng..." hiện ra
     const dialogShown = await waitFor(() =>
         isVisible(document.querySelector('ytgn-audio-upload-dialog #upload-button')), TIMEOUT);
@@ -236,8 +314,9 @@ async function uploadAudio(audio) {
     }
 
     // Ghép lại File từ các phần đã nhận
-    const file = new File(window.manualDubAudioParts || [], audio.name, { type: audio.type || 'audio/mpeg' });
-    window.manualDubAudioParts = [];
+    const parts = window.manualDubAudioParts || {};
+    const file = new File(parts[slot] || [], audio.name, { type: audio.type || 'audio/mpeg' });
+    parts[slot] = [];
 
     const dt = new DataTransfer();
     dt.items.add(file);
@@ -263,6 +342,15 @@ async function uploadAudio(audio) {
     (btnPublish.querySelector('button') || btnPublish).click();
     console.log('Clicked Xuất bản');
 
+    // Chờ hộp tải đóng lại
+    const closed = await waitFor(() => !isVisible(document.querySelector('ytgn-audio-upload-dialog #publish-button')), 60000);
+    if (!closed) {
+        throw new Error('Hộp tải âm thanh chưa đóng sau 60 giây');
+    }
+    await sleep(SETTLE);
+}
+
+async function clickUpdate() {
     // Chờ nút Cập nhật của hộp ngôn ngữ bật lên (sau khi âm thanh "Đã xuất bản") rồi bấm
     const btnUpdate = document.querySelector('ytcp-button.ytgn-language-dialog-update');
     if (!btnUpdate) {
@@ -276,6 +364,9 @@ async function uploadAudio(audio) {
     checkAbort();
     (btnUpdate.querySelector('button') || btnUpdate).click();
     console.log('Clicked Cập nhật');
+
+    const langCancel = document.querySelector('ytcp-icon-button.ytgn-language-dialog-cancel');
+    await waitFor(() => !isVisible(langCancel), TIMEOUT);
 }
 
 function showNotification(langName, code) {
