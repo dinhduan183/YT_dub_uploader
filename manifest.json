@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "YT Dub Uploader",
-  "version": "3.0",
+  "version": "3.1",
   "description": "Trợ giúp thêm dub thủ công - chỉ mở dialog, bạn làm phần còn lại",
   "permissions": [
     "activeTab",

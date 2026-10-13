@@ -6,6 +6,7 @@ let descAudioFile = null; // File âm thanh mô tả dùng chung cho mọi ngôn
 let isRunningAll = false;
 let isAdding = false; // Đang thêm 1 ngôn ngữ (lẻ hoặc trong Chạy tất cả)
 let isSyncing = false;
+let isDeleting = false; // Đang xoá âm thanh lỗi
 let lastSyncedVideoId = null; // Video đã tự Reload gần nhất
 let runTabId = null; // Tab YouTube Studio đang chạy "Chạy tất cả"
 let runWindowId = null;
@@ -42,15 +43,16 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 function isBusy() {
-    return isRunningAll || isAdding;
+    return isRunningAll || isAdding || isDeleting;
 }
 
 // Khoá Reload khi đang thêm ngôn ngữ. Nút Chạy tất cả thành nút Dừng khi đang chạy tất cả,
-// và bị khoá khi đang thêm 1 ngôn ngữ lẻ.
+// và bị khoá khi đang thêm 1 ngôn ngữ lẻ / đang xoá âm thanh lỗi.
 function updateBusyUI() {
     const btnRun = document.getElementById('btnRunAll');
     document.getElementById('btnSync').disabled = isBusy();
-    btnRun.disabled = isAdding && !isRunningAll;
+    document.getElementById('btnDeleteErrors').disabled = isBusy();
+    btnRun.disabled = (isAdding || isDeleting) && !isRunningAll;
     btnRun.classList.toggle('btn-stop', isRunningAll);
     if (!isRunningAll) btnRun.textContent = '▶ Chạy tất cả';
 }
@@ -332,6 +334,9 @@ function setupEventListeners() {
         }
     });
 
+    // Xoá âm thanh lỗi
+    document.getElementById('btnDeleteErrors').addEventListener('click', deleteErrorAudios);
+
     // Chọn file âm thanh
     document.getElementById('btnPickAudio').addEventListener('click', () => {
         document.getElementById('audioFile').click();
@@ -592,6 +597,79 @@ async function runAll() {
     } else if (noMain.length) {
         alert(`Chạy tất cả đã xong.${noMainText}`);
     }
+}
+
+// Xoá âm thanh lỗi (Removed / Processing failed) của mọi ngôn ngữ trên video đang mở.
+// Đọc bảng Bản dịch, hỏi xác nhận, rồi xoá lần lượt; chỉ xoá âm thanh, giữ ngôn ngữ và phụ đề.
+async function deleteErrorAudios() {
+    if (isBusy()) return;
+
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab || !/studio\.youtube\.com\/video\/[a-zA-Z0-9_-]+\/translations/.test(tab.url || '')) {
+        alert('Hãy mở trang Translations của video trên YouTube Studio trước!');
+        return;
+    }
+
+    let rows;
+    try {
+        const [injection] = await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            world: 'MAIN',
+            func: readTranslationRows,
+            args: [null, false]
+        });
+        rows = injection.result || [];
+    } catch (e) {
+        alert('Lỗi: ' + e.message);
+        return;
+    }
+
+    const errors = rows.filter(r => r.status === 'error' && r.name);
+    if (errors.length === 0) {
+        alert('Video không có âm thanh lỗi nào.');
+        return;
+    }
+    if (!confirm(`Xoá âm thanh lỗi của ${errors.length} ngôn ngữ? (Giữ nguyên ngôn ngữ và phụ đề)\n\n${errors.map(r => `• ${r.name}: ${r.text}`).join('\n')}`)) {
+        return;
+    }
+
+    const btn = document.getElementById('btnDeleteErrors');
+    isDeleting = true;
+    updateBusyUI();
+
+    const failed = [];
+    try {
+        try {
+            await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
+        } catch (e) {
+            console.log('Script injection:', e.message);
+        }
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        for (let i = 0; i < errors.length; i++) {
+            btn.textContent = `⏳ ${i + 1}/${errors.length}`;
+            try {
+                const response = await sendToTab(tab.id, { action: 'delete_error_audio', langName: errors[i].name });
+                if (!response || !response.success) {
+                    throw new Error(response ? response.error : 'Không nhận được phản hồi từ trang');
+                }
+            } catch (e) {
+                failed.push(`• ${errors[i].name}: ${e.message}`);
+            }
+            await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+    } finally {
+        isDeleting = false;
+        btn.textContent = '🗑 Âm thanh lỗi';
+        updateBusyUI();
+    }
+
+    await syncStatus(true);
+
+    const done = errors.length - failed.length;
+    alert(failed.length
+        ? `Đã xoá âm thanh lỗi của ${done}/${errors.length} ngôn ngữ.\n\n⚠️ Lỗi:\n${failed.join('\n')}`
+        : `✅ Đã xoá âm thanh lỗi của ${done} ngôn ngữ.`);
 }
 
 // Base64 chia phần, bội số của 4 để mỗi phần tự giải mã được

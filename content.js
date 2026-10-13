@@ -15,6 +15,16 @@ function handleMessage(request, _sender, sendResponse) {
         return true; // Keep channel open for async response
     }
     
+    if (request.action === "delete_error_audio") {
+        deleteErrorAudio(request.langName)
+            .then(() => sendResponse({ success: true }))
+            .catch((error) => {
+                console.error(error);
+                sendResponse({ success: false, error: error.message });
+            });
+        return true;
+    }
+
     // Nhận file âm thanh theo từng phần base64 từ side panel (slot: 'main' = âm thanh gốc, 'desc' = âm thanh mô tả)
     if (request.action === "audio_reset") {
         window.manualDubAudioParts = window.manualDubAudioParts || {};
@@ -195,6 +205,72 @@ async function openExistingLanguage(displayName, name, nameVn) {
     }
     btn.click();
     console.log('Mở hộp ngôn ngữ đã có:', displayName);
+}
+
+// Xoá âm thanh lỗi (Removed / Processing failed) của 1 ngôn ngữ, giữ nguyên ngôn ngữ và phụ đề:
+// mở hộp ngôn ngữ từ bảng Bản dịch → menu ⋮ của dòng Audio → Delete → Cập nhật
+async function deleteErrorAudio(langName) {
+    console.log(`Deleting error audio: ${langName}`);
+    window.manualDubAbort = null;
+
+    await closeOpenDialogs();
+    await openExistingLanguage(langName, langName, langName);
+
+    const audioRowShown = await waitFor(() =>
+        isVisible(document.querySelector('#language-details-source-label-audio')), TIMEOUT);
+    if (!audioRowShown) {
+        throw new Error('Hộp ngôn ngữ không hiện ra');
+    }
+    await sleep(SETTLE);
+
+    const btnMore = await waitForElement(() => {
+        const el = document.querySelector('#language-details-more-options-button-audio');
+        return isVisible(el) ? el : null;
+    });
+    if (!btnMore) {
+        throw new Error('Không tìm thấy nút ⋮ ở dòng Audio');
+    }
+    clickButton(btnMore);
+
+    const menuItem = await waitForElement(() => {
+        const el = document.querySelector('tp-yt-paper-item[test-id="delete_dubbed_audio"]');
+        return isVisible(el) ? el : null;
+    }, 3000);
+    if (!menuItem) {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+        await sleep(SETTLE);
+        await closeOpenDialogs();
+        throw new Error('Menu ⋮ của dòng Audio không có mục Delete');
+    }
+    menuItem.click();
+    console.log('Clicked Delete');
+
+    // Nếu YouTube hỏi xác nhận xoá thì bấm đồng ý
+    const audioGone = () => !isVisible(document.querySelector('#language-details-source-label-audio'))
+        || isVisible(document.querySelector('#language-details-text-button-audio'));
+    const deleteConfirm = () => [...document.querySelectorAll('ytcp-confirmation-dialog #confirm-button')]
+        .find(el => isVisible(el) && !el.closest('#ytgn-save-changes-confirmation-dialog'));
+    await waitFor(() => audioGone() || deleteConfirm(), 5000);
+    if (deleteConfirm()) {
+        clickButton(deleteConfirm());
+        console.log('Đã xác nhận xoá');
+    }
+
+    const gone = await waitFor(audioGone, TIMEOUT);
+    if (!gone) {
+        throw new Error('Âm thanh chưa bị xoá khỏi hộp ngôn ngữ');
+    }
+    await sleep(SETTLE);
+
+    // Có thay đổi chưa lưu thì bấm Cập nhật, không thì đóng hộp ngôn ngữ
+    const btnUpdate = document.querySelector('ytcp-button.ytgn-language-dialog-update');
+    if (isVisible(btnUpdate) && !btnUpdate.hasAttribute('disabled')) {
+        await clickUpdate();
+    } else {
+        await closeOpenDialogs();
+    }
+
+    showNotification(`Đã xoá âm thanh lỗi`, langName);
 }
 
 // Menu ⋮ của dòng Audio → "Add descriptive audio" → tải file mô tả
