@@ -63,7 +63,7 @@ window.manualDubHelperLoaded = true;
 
 // Trả về { onVideo, mainAdded, descState }
 // onVideo: ngôn ngữ đã có trên video từ trước (mở hộp ngôn ngữ từ bảng Bản dịch)
-// descState: 'present' (đã có) / 'added' (vừa thêm) / 'blocked' (âm thanh gốc lỗi/đã xoá) / 'skipped' (không làm)
+// descState: 'present' (đã có) / 'added' (vừa thêm) / 'blocked' (menu ⋮ không có Add descriptive audio) / 'skipped' (không làm)
 async function addSingleLanguage(code, name, nameVn, audio, descAudio) {
     console.log(`Adding language: ${code} - ${nameVn}`);
     window.manualDubAbort = null;
@@ -213,7 +213,7 @@ async function addDescriptiveAudio(descAudio) {
         return isVisible(el) ? el : null;
     }, 3000);
     if (!menuItem) {
-        // Âm thanh gốc bị xoá / lỗi thì menu chỉ có Delete
+        // Menu không có mục này thì bỏ qua
         document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
         await sleep(SETTLE);
         console.log('Menu không có Add descriptive audio');

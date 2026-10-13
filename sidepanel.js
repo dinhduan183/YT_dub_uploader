@@ -116,15 +116,14 @@ function currentVideoId() {
 
 // Ngôn ngữ còn thiếu gì để bổ sung không (âm thanh gốc, hoặc âm thanh mô tả khi đã chọn file mô tả)
 function needsWork(item) {
-    if (item.ytStatus === 'error') return false; // Âm thanh gốc đã xoá / lỗi - tự xử lý trên Studio
     if (!item.ytStatus) return item.status !== 'done' && item.status !== 'processing';
     if (item.ytStatus === 'none') return true;
     return !!descAudioFile && item.descVideoId !== currentVideoId();
 }
 
-// Ngôn ngữ đã có âm thanh gốc trên video
+// Ngôn ngữ đã có âm thanh gốc trên video (kể cả bị Removed / lỗi - vẫn thêm được âm thanh mô tả)
 function hasMainAudio(item) {
-    return item.ytStatus === 'published' || item.ytStatus === 'processing';
+    return item.ytStatus === 'published' || item.ytStatus === 'processing' || item.ytStatus === 'error';
 }
 
 const DESC_NEEDS_MAIN_MSG = 'Âm thanh mô tả chỉ thêm được sau khi ngôn ngữ đã có âm thanh gốc.';
@@ -494,7 +493,7 @@ async function addDubForLang(index, tabId = null) {
         }
 
         if (response.descState === 'blocked') {
-            throw new Error('Âm thanh gốc đã bị xoá / lỗi nên không thêm được âm thanh mô tả');
+            throw new Error('Menu ⋮ của dòng Audio không có mục Add descriptive audio');
         }
     } catch (e) {
         console.error('Error:', e);
