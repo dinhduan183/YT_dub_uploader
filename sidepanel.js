@@ -8,6 +8,9 @@ let isAdding = false; // Đang thêm 1 ngôn ngữ (lẻ hoặc trong Chạy t�
 let isSyncing = false;
 let isDeleting = false; // Đang xoá âm thanh lỗi
 let deleteStopRequested = false; // Đã bấm Dừng khi đang xoá âm thanh lỗi
+let deleteTabId = null; // Tab YouTube Studio đang xoá âm thanh lỗi
+let deleteVideoId = null;
+let deleteAbortReason = null; // Lý do tự dừng xoá (tab rời khỏi video đang xoá)
 let lastSyncedVideoId = null; // Video đã tự Reload gần nhất
 let runTabId = null; // Tab YouTube Studio đang chạy "Chạy tất cả"
 let runWindowId = null;
@@ -28,6 +31,11 @@ document.addEventListener('DOMContentLoaded', () => {
         if (isRunningAll && tabId === runTabId && changeInfo.url
             && !changeInfo.url.includes(`/video/${runVideoId}/translations`)) {
             stopRun('Trang YouTube Studio đã chuyển đi');
+        }
+        // Đang xoá âm thanh lỗi mà tab đó chuyển sang trang / video khác → dừng, không xoá nhầm sang video mới
+        if (isDeleting && tabId === deleteTabId && changeInfo.url
+            && !changeInfo.url.includes(`/video/${deleteVideoId}/translations`)) {
+            abortDeleting('Trang YouTube Studio đã chuyển sang video / trang khác');
         }
         if (changeInfo.url || changeInfo.status === 'complete') {
             checkCurrentTab();
@@ -646,12 +654,16 @@ async function deleteErrorAudios(quick) {
     const btnLabel = btn.textContent;
     btn.dataset.running = '1';
     deleteStopRequested = false;
+    deleteAbortReason = null;
+    deleteTabId = tab.id;
+    deleteVideoId = tab.url.match(/\/video\/([a-zA-Z0-9_-]+)/)[1];
     isDeleting = true;
     updateBusyUI();
 
     let failed = [];
     let notRun = []; // Ngôn ngữ chưa xoá vì đã bấm Dừng
     let stopped = false;
+    let abortReason = null;
     try {
         try {
             await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
@@ -664,7 +676,7 @@ async function deleteErrorAudios(quick) {
             failed = await quickDeletePasses(tab, errors, btn);
         } else {
             for (let i = 0; i < errors.length; i++) {
-                if (deleteStopRequested) {
+                if (deleteStopRequested || !await isTabOnVideo(tab.id, deleteVideoId)) {
                     notRun = errors.slice(i);
                     break;
                 }
@@ -682,8 +694,12 @@ async function deleteErrorAudios(quick) {
         }
     } finally {
         stopped = deleteStopRequested;
+        abortReason = deleteAbortReason;
         isDeleting = false;
         deleteStopRequested = false;
+        deleteAbortReason = null;
+        deleteTabId = null;
+        deleteVideoId = null;
         delete btn.dataset.running;
         btn.textContent = btnLabel;
         updateBusyUI();
@@ -691,12 +707,41 @@ async function deleteErrorAudios(quick) {
 
     await syncStatus(true);
 
+    // Tự dừng vì tab rời video: không biết chắc ngôn ngữ đang xoá dở đã xoá xong chưa → nhắc mở lại video kiểm tra
+    if (abortReason) {
+        const unknown = [...failed, ...notRun.map(r => `• ${r.name}`)];
+        alert(`⛔ Đã dừng xoá: ${abortReason}.\nHãy mở lại trang Translations của video ${tab.url.match(/\/video\/([a-zA-Z0-9_-]+)/)[1]} để kiểm tra.${unknown.length ? `\n\nChưa xác nhận đã xoá:\n${unknown.join('\n')}` : ''}`);
+        return;
+    }
+
     const done = errors.length - failed.length - notRun.length;
     const stoppedText = stopped ? '⛔ Đã dừng. ' : '';
     const notRunText = notRun.length ? `\n\nChưa xoá:\n${notRun.map(r => `• ${r.name}`).join('\n')}` : '';
     alert(failed.length || notRun.length || stopped
         ? `${stoppedText}Đã xoá âm thanh lỗi của ${done}/${errors.length} ngôn ngữ.${failed.length ? `\n\n⚠️ Còn lỗi:\n${failed.join('\n')}` : ''}${notRunText}`
         : `✅ Đã xoá âm thanh lỗi của ${done} ngôn ngữ.`);
+}
+
+// Tab đang xoá rời khỏi video: ngắt luôn thao tác đang dở trên trang và không xoá tiếp
+function abortDeleting(reason) {
+    if (deleteAbortReason) return;
+    deleteAbortReason = reason;
+    stopDeleting();
+    chrome.tabs.sendMessage(deleteTabId, { action: 'abort', reason: reason }, () => {
+        void chrome.runtime.lastError; // Tab có thể đã rời trang - bỏ qua
+    });
+}
+
+// Tab vẫn đang ở trang Translations của video đang xoá không
+async function isTabOnVideo(tabId, videoId) {
+    try {
+        const tab = await chrome.tabs.get(tabId);
+        if ((tab.url || '').includes(`/video/${videoId}/translations`)) return true;
+    } catch (e) {
+        // Tab đã đóng
+    }
+    abortDeleting('Trang YouTube Studio đã chuyển sang video / trang khác hoặc đã đóng');
+    return false;
 }
 
 // Bấm Dừng khi đang xoá: xoá xong ngôn ngữ đang làm dở thì dừng
@@ -724,7 +769,7 @@ async function quickDeletePasses(tab, errors, btn) {
 
     for (let pass = 1; pass <= QUICK_DELETE_MAX_PASSES && remaining.length > 0; pass++) {
         for (let i = 0; i < remaining.length; i++) {
-            if (deleteStopRequested) break;
+            if (deleteStopRequested || !await isTabOnVideo(tab.id, videoId)) break;
             setDeleteProgress(btn, `lượt ${pass}: ${i + 1}/${remaining.length}`);
             try {
                 const response = await sendToTab(tab.id, { action: 'delete_error_audio_quick', langName: remaining[i].name });
@@ -734,6 +779,11 @@ async function quickDeletePasses(tab, errors, btn) {
             } catch (e) {
                 lastError[remaining[i].name] = e.message;
             }
+        }
+
+        // Tab đã rời video → không tải lại (sẽ tải lại nhầm trang khác), báo các ngôn ngữ chưa xác nhận
+        if (deleteAbortReason || !await isTabOnVideo(tab.id, videoId)) {
+            return remaining.map(r => `• ${r.name}`);
         }
 
         // Đã dừng vẫn tải lại trang 1 lần để bảng hiện đúng và biết ngôn ngữ nào còn lỗi
@@ -794,7 +844,7 @@ async function sendAudioFile(tabId, slot, file) {
     for (let i = 0; i < data.length; i += AUDIO_CHUNK_SIZE) {
         await sendToTab(tabId, { action: 'audio_chunk', slot: slot, data: data.slice(i, i + AUDIO_CHUNK_SIZE) });
     }
-    return { name: file.name, type: file.type };
+    return { name: file.name, type: file.type, size: file.size };
 }
 
 function sendToTab(tabId, message) {
