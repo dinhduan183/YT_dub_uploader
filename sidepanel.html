@@ -249,6 +249,9 @@
             cursor: not-allowed;
         }
         .btn-tool svg { width: 14px; height: 14px; }
+        .btn-tool.btn-stop,
+        .btn-tool.btn-stop:hover { color: var(--err); border-color: var(--err); background: var(--err-bg); }
+        .btn-tool.btn-stop:disabled { color: var(--text-3); border-color: var(--border); background: transparent; }
         .toolbar .btn-tool:not(#btnSync) { padding: 4px 6px; }
 
         .tool-row { display: flex; gap: 6px; }

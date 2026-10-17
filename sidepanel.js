@@ -7,6 +7,7 @@ let isRunningAll = false;
 let isAdding = false; // Đang thêm 1 ngôn ngữ (lẻ hoặc trong Chạy tất cả)
 let isSyncing = false;
 let isDeleting = false; // Đang xoá âm thanh lỗi
+let deleteStopRequested = false; // Đã bấm Dừng khi đang xoá âm thanh lỗi
 let lastSyncedVideoId = null; // Video đã tự Reload gần nhất
 let runTabId = null; // Tab YouTube Studio đang chạy "Chạy tất cả"
 let runWindowId = null;
@@ -51,8 +52,13 @@ function isBusy() {
 function updateBusyUI() {
     const btnRun = document.getElementById('btnRunAll');
     document.getElementById('btnSync').disabled = isBusy();
-    document.getElementById('btnDeleteErrors').disabled = isBusy();
-    document.getElementById('btnDeleteErrorsQuick').disabled = isBusy();
+    // Nút xoá đang chạy thành nút Dừng, nút xoá còn lại bị khoá
+    ['btnDeleteErrors', 'btnDeleteErrorsQuick'].forEach(id => {
+        const btn = document.getElementById(id);
+        const running = isDeleting && btn.dataset.running === '1';
+        btn.disabled = running ? deleteStopRequested : isBusy();
+        btn.classList.toggle('btn-stop', running);
+    });
     btnRun.disabled = (isAdding || isDeleting) && !isRunningAll;
     btnRun.classList.toggle('btn-stop', isRunningAll);
     if (!isRunningAll) btnRun.textContent = '▶ Chạy tất cả';
@@ -336,8 +342,8 @@ function setupEventListeners() {
     });
 
     // Xoá âm thanh lỗi
-    document.getElementById('btnDeleteErrors').addEventListener('click', () => deleteErrorAudios(false));
-    document.getElementById('btnDeleteErrorsQuick').addEventListener('click', () => deleteErrorAudios(true));
+    document.getElementById('btnDeleteErrors').addEventListener('click', () => isDeleting ? stopDeleting() : deleteErrorAudios(false));
+    document.getElementById('btnDeleteErrorsQuick').addEventListener('click', () => isDeleting ? stopDeleting() : deleteErrorAudios(true));
 
     // Chọn file âm thanh
     document.getElementById('btnPickAudio').addEventListener('click', () => {
@@ -638,10 +644,14 @@ async function deleteErrorAudios(quick) {
 
     const btn = document.getElementById(quick ? 'btnDeleteErrorsQuick' : 'btnDeleteErrors');
     const btnLabel = btn.textContent;
+    btn.dataset.running = '1';
+    deleteStopRequested = false;
     isDeleting = true;
     updateBusyUI();
 
     let failed = [];
+    let notRun = []; // Ngôn ngữ chưa xoá vì đã bấm Dừng
+    let stopped = false;
     try {
         try {
             await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
@@ -654,7 +664,11 @@ async function deleteErrorAudios(quick) {
             failed = await quickDeletePasses(tab, errors, btn);
         } else {
             for (let i = 0; i < errors.length; i++) {
-                btn.textContent = `⏳ ${i + 1}/${errors.length}`;
+                if (deleteStopRequested) {
+                    notRun = errors.slice(i);
+                    break;
+                }
+                setDeleteProgress(btn, `${i + 1}/${errors.length}`);
                 try {
                     const response = await sendToTab(tab.id, { action: 'delete_error_audio', langName: errors[i].name });
                     if (!response || !response.success) {
@@ -667,17 +681,35 @@ async function deleteErrorAudios(quick) {
             }
         }
     } finally {
+        stopped = deleteStopRequested;
         isDeleting = false;
+        deleteStopRequested = false;
+        delete btn.dataset.running;
         btn.textContent = btnLabel;
         updateBusyUI();
     }
 
     await syncStatus(true);
 
-    const done = errors.length - failed.length;
-    alert(failed.length
-        ? `Đã xoá âm thanh lỗi của ${done}/${errors.length} ngôn ngữ.\n\n⚠️ Lỗi:\n${failed.join('\n')}`
+    const done = errors.length - failed.length - notRun.length;
+    const stoppedText = stopped ? '⛔ Đã dừng. ' : '';
+    const notRunText = notRun.length ? `\n\nChưa xoá:\n${notRun.map(r => `• ${r.name}`).join('\n')}` : '';
+    alert(failed.length || notRun.length || stopped
+        ? `${stoppedText}Đã xoá âm thanh lỗi của ${done}/${errors.length} ngôn ngữ.${failed.length ? `\n\n⚠️ Còn lỗi:\n${failed.join('\n')}` : ''}${notRunText}`
         : `✅ Đã xoá âm thanh lỗi của ${done} ngôn ngữ.`);
+}
+
+// Bấm Dừng khi đang xoá: xoá xong ngôn ngữ đang làm dở thì dừng
+function stopDeleting() {
+    if (deleteStopRequested) return;
+    deleteStopRequested = true;
+    const btn = document.querySelector('[data-running="1"]');
+    if (btn) btn.textContent = '⏳ Đang dừng...';
+    updateBusyUI();
+}
+
+function setDeleteProgress(btn, text) {
+    if (!deleteStopRequested) btn.textContent = `⏹ Dừng (${text})`;
 }
 
 // Xoá nhanh theo lượt: mỗi lượt bấm xoá lần lượt các ngôn ngữ còn lỗi (không thấy nút thì bỏ qua),
@@ -692,7 +724,8 @@ async function quickDeletePasses(tab, errors, btn) {
 
     for (let pass = 1; pass <= QUICK_DELETE_MAX_PASSES && remaining.length > 0; pass++) {
         for (let i = 0; i < remaining.length; i++) {
-            btn.textContent = `⏳ Lượt ${pass}: ${i + 1}/${remaining.length}`;
+            if (deleteStopRequested) break;
+            setDeleteProgress(btn, `lượt ${pass}: ${i + 1}/${remaining.length}`);
             try {
                 const response = await sendToTab(tab.id, { action: 'delete_error_audio_quick', langName: remaining[i].name });
                 if (!response || !response.success) {
@@ -703,7 +736,8 @@ async function quickDeletePasses(tab, errors, btn) {
             }
         }
 
-        btn.textContent = '⏳ Tải lại trang...';
+        // Đã dừng vẫn tải lại trang 1 lần để bảng hiện đúng và biết ngôn ngữ nào còn lỗi
+        setDeleteProgress(btn, 'tải lại trang...');
         try {
             await reloadTranslationsTab(tab.id, videoId);
             const [injection] = await chrome.scripting.executeScript({
@@ -716,13 +750,13 @@ async function quickDeletePasses(tab, errors, btn) {
             const next = remaining.filter(r => stillError.has(r.name));
             const progressed = next.length < remaining.length;
             remaining = next;
-            if (!progressed) break;
+            if (!progressed || deleteStopRequested) break;
         } catch (e) {
             return remaining.map(r => `• ${r.name}: ${e.message}`);
         }
     }
 
-    return remaining.map(r => `• ${r.name}: ${lastError[r.name] || 'Vẫn còn lỗi sau khi xoá'}`);
+    return remaining.map(r => `• ${r.name}: ${lastError[r.name] || (deleteStopRequested ? 'Chưa xoá (đã dừng)' : 'Vẫn còn lỗi sau khi xoá')}`);
 }
 
 // Tải lại trang Translations, chờ bảng tải xong rồi inject lại content.js
