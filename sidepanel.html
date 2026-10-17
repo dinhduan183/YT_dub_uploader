@@ -20,6 +20,9 @@
             --warn-bg: rgba(255, 183, 0, 0.14); --warn: #f5c04a;
             --err-bg: rgba(255, 78, 69, 0.16);  --err: #ff6b63;
             --muted-bg: #2a2a2a;
+            --cleanup-bg: #2a1a12;
+            --cleanup-border: #5c3420;
+            --cleanup-title: #ff9a5c;
         }
         @media (prefers-color-scheme: light) {
             :root {
@@ -36,6 +39,9 @@
                 --warn-bg: #fef7e0; --warn: #8a5a00;
                 --err-bg: #fce8e6;  --err: #c5221f;
                 --muted-bg: #ececec;
+                --cleanup-bg: #fff1e8;
+                --cleanup-border: #f5c7a6;
+                --cleanup-title: #b4541a;
             }
         }
 
@@ -254,6 +260,11 @@
         .btn-tool.btn-stop:disabled { color: var(--text-3); border-color: var(--border); background: transparent; }
         .toolbar .btn-tool:not(#btnSync) { padding: 4px 6px; }
 
+        /* Khối Âm thanh lỗi: chức năng riêng, tách màu khỏi các khối thêm ngôn ngữ */
+        .section-cleanup { background: var(--cleanup-bg); border-color: var(--cleanup-border); }
+        .section-cleanup .section-title { color: var(--cleanup-title); }
+        .section-cleanup .btn-tool:not(.btn-stop) { background: var(--surface); }
+        .section-cleanup .btn-tool:not(.btn-stop):not(:disabled):hover { background: var(--surface-2); }
         .tool-row { display: flex; gap: 6px; }
         .tool-row .btn-tool { flex: 1; padding: 6px 8px; }
 
@@ -415,6 +426,16 @@
             <span>Đang kiểm tra...</span>
         </div>
         
+        <div class="section section-cleanup">
+            <div class="section-header">
+                <span class="section-title">Âm thanh lỗi</span>
+            </div>
+            <div class="tool-row">
+                <button class="btn-tool" id="btnDeleteErrors" title="Xoá âm thanh lỗi (Removed / Processing failed) qua hộp ngôn ngữ">🗑 Xoá qua hộp ngôn ngữ</button>
+                <button class="btn-tool" id="btnDeleteErrorsQuick" title="Xoá nhanh âm thanh lỗi ngay ở bảng Bản dịch (không mở hộp ngôn ngữ)">⚡ Xoá nhanh</button>
+            </div>
+        </div>
+
         <div class="section">
             <div class="section-header">
                 <span class="section-title">Chọn ngôn ngữ</span>
@@ -446,15 +467,6 @@
             </div>
         </div>
 
-        <div class="section">
-            <div class="section-header">
-                <span class="section-title">Âm thanh lỗi</span>
-            </div>
-            <div class="tool-row">
-                <button class="btn-tool" id="btnDeleteErrors" title="Xoá âm thanh lỗi (Removed / Processing failed) qua hộp ngôn ngữ">🗑 Xoá qua hộp ngôn ngữ</button>
-                <button class="btn-tool" id="btnDeleteErrorsQuick" title="Xoá nhanh âm thanh lỗi ngay ở bảng Bản dịch (không mở hộp ngôn ngữ)">⚡ Xoá nhanh</button>
-            </div>
-        </div>
 
         <div class="section flex-grow">
             <div class="section-header">
