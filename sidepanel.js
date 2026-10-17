@@ -52,6 +52,7 @@ function updateBusyUI() {
     const btnRun = document.getElementById('btnRunAll');
     document.getElementById('btnSync').disabled = isBusy();
     document.getElementById('btnDeleteErrors').disabled = isBusy();
+    document.getElementById('btnDeleteErrorsQuick').disabled = isBusy();
     btnRun.disabled = (isAdding || isDeleting) && !isRunningAll;
     btnRun.classList.toggle('btn-stop', isRunningAll);
     if (!isRunningAll) btnRun.textContent = '▶ Chạy tất cả';
@@ -335,7 +336,8 @@ function setupEventListeners() {
     });
 
     // Xoá âm thanh lỗi
-    document.getElementById('btnDeleteErrors').addEventListener('click', deleteErrorAudios);
+    document.getElementById('btnDeleteErrors').addEventListener('click', () => deleteErrorAudios(false));
+    document.getElementById('btnDeleteErrorsQuick').addEventListener('click', () => deleteErrorAudios(true));
 
     // Chọn file âm thanh
     document.getElementById('btnPickAudio').addEventListener('click', () => {
@@ -601,7 +603,8 @@ async function runAll() {
 
 // Xoá âm thanh lỗi (Removed / Processing failed) của mọi ngôn ngữ trên video đang mở.
 // Đọc bảng Bản dịch, hỏi xác nhận, rồi xoá lần lượt; chỉ xoá âm thanh, giữ ngôn ngữ và phụ đề.
-async function deleteErrorAudios() {
+// quick: xoá ngay ở bảng (nút ▾ của ô Audio) thay vì mở hộp ngôn ngữ
+async function deleteErrorAudios(quick) {
     if (isBusy()) return;
 
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -633,11 +636,12 @@ async function deleteErrorAudios() {
         return;
     }
 
-    const btn = document.getElementById('btnDeleteErrors');
+    const btn = document.getElementById(quick ? 'btnDeleteErrorsQuick' : 'btnDeleteErrors');
+    const btnLabel = btn.textContent;
     isDeleting = true;
     updateBusyUI();
 
-    const failed = [];
+    let failed = [];
     try {
         try {
             await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
@@ -646,21 +650,25 @@ async function deleteErrorAudios() {
         }
         await new Promise(resolve => setTimeout(resolve, 500));
 
-        for (let i = 0; i < errors.length; i++) {
-            btn.textContent = `⏳ ${i + 1}/${errors.length}`;
-            try {
-                const response = await sendToTab(tab.id, { action: 'delete_error_audio', langName: errors[i].name });
-                if (!response || !response.success) {
-                    throw new Error(response ? response.error : 'Không nhận được phản hồi từ trang');
+        if (quick) {
+            failed = await quickDeletePasses(tab, errors, btn);
+        } else {
+            for (let i = 0; i < errors.length; i++) {
+                btn.textContent = `⏳ ${i + 1}/${errors.length}`;
+                try {
+                    const response = await sendToTab(tab.id, { action: 'delete_error_audio', langName: errors[i].name });
+                    if (!response || !response.success) {
+                        throw new Error(response ? response.error : 'Không nhận được phản hồi từ trang');
+                    }
+                } catch (e) {
+                    failed.push(`• ${errors[i].name}: ${e.message}`);
                 }
-            } catch (e) {
-                failed.push(`• ${errors[i].name}: ${e.message}`);
+                await new Promise(resolve => setTimeout(resolve, 2000));
             }
-            await new Promise(resolve => setTimeout(resolve, 2000));
         }
     } finally {
         isDeleting = false;
-        btn.textContent = '🗑 Âm thanh lỗi';
+        btn.textContent = btnLabel;
         updateBusyUI();
     }
 
@@ -670,6 +678,75 @@ async function deleteErrorAudios() {
     alert(failed.length
         ? `Đã xoá âm thanh lỗi của ${done}/${errors.length} ngôn ngữ.\n\n⚠️ Lỗi:\n${failed.join('\n')}`
         : `✅ Đã xoá âm thanh lỗi của ${done} ngôn ngữ.`);
+}
+
+// Xoá nhanh theo lượt: mỗi lượt bấm xoá lần lượt các ngôn ngữ còn lỗi (không thấy nút thì bỏ qua),
+// hết lượt mới tải lại trang và đọc lại bảng để tìm ngôn ngữ còn sót. Dừng khi hết sót hoặc lượt sau không xoá thêm được.
+// Trả về danh sách lỗi của các ngôn ngữ vẫn còn sót.
+const QUICK_DELETE_MAX_PASSES = 3;
+
+async function quickDeletePasses(tab, errors, btn) {
+    const videoId = tab.url.match(/\/video\/([a-zA-Z0-9_-]+)/)[1];
+    const lastError = {};
+    let remaining = errors;
+
+    for (let pass = 1; pass <= QUICK_DELETE_MAX_PASSES && remaining.length > 0; pass++) {
+        for (let i = 0; i < remaining.length; i++) {
+            btn.textContent = `⏳ Lượt ${pass}: ${i + 1}/${remaining.length}`;
+            try {
+                const response = await sendToTab(tab.id, { action: 'delete_error_audio_quick', langName: remaining[i].name });
+                if (!response || !response.success) {
+                    throw new Error(response ? response.error : 'Không nhận được phản hồi từ trang');
+                }
+            } catch (e) {
+                lastError[remaining[i].name] = e.message;
+            }
+        }
+
+        btn.textContent = '⏳ Tải lại trang...';
+        try {
+            await reloadTranslationsTab(tab.id, videoId);
+            const [injection] = await chrome.scripting.executeScript({
+                target: { tabId: tab.id },
+                world: 'MAIN',
+                func: readTranslationRows,
+                args: [null, false]
+            });
+            const stillError = new Set((injection.result || []).filter(r => r.status === 'error').map(r => r.name));
+            const next = remaining.filter(r => stillError.has(r.name));
+            const progressed = next.length < remaining.length;
+            remaining = next;
+            if (!progressed) break;
+        } catch (e) {
+            return remaining.map(r => `• ${r.name}: ${e.message}`);
+        }
+    }
+
+    return remaining.map(r => `• ${r.name}: ${lastError[r.name] || 'Vẫn còn lỗi sau khi xoá'}`);
+}
+
+// Tải lại trang Translations, chờ bảng tải xong rồi inject lại content.js
+async function reloadTranslationsTab(tabId, videoId) {
+    await new Promise(resolve => {
+        const onUpdated = (id, changeInfo) => {
+            if (id === tabId && changeInfo.status === 'complete') {
+                chrome.tabs.onUpdated.removeListener(onUpdated);
+                resolve();
+            }
+        };
+        chrome.tabs.onUpdated.addListener(onUpdated);
+        chrome.tabs.reload(tabId);
+    });
+    const [injection] = await chrome.scripting.executeScript({
+        target: { tabId: tabId },
+        world: 'MAIN',
+        func: readTranslationRows,
+        args: [videoId, true]
+    });
+    if (injection.result === null) {
+        throw new Error('Bảng Bản dịch chưa tải xong sau khi tải lại trang');
+    }
+    await chrome.scripting.executeScript({ target: { tabId: tabId }, files: ['content.js'] });
 }
 
 // Base64 chia phần, bội số của 4 để mỗi phần tự giải mã được

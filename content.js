@@ -15,8 +15,8 @@ function handleMessage(request, _sender, sendResponse) {
         return true; // Keep channel open for async response
     }
     
-    if (request.action === "delete_error_audio") {
-        deleteErrorAudio(request.langName)
+    if (request.action === "delete_error_audio" || request.action === "delete_error_audio_quick") {
+        (request.action === "delete_error_audio_quick" ? deleteErrorAudioFromTable : deleteErrorAudio)(request.langName)
             .then(() => sendResponse({ success: true }))
             .catch((error) => {
                 console.error(error);
@@ -269,6 +269,66 @@ async function deleteErrorAudio(langName) {
     } else {
         await closeOpenDialogs();
     }
+
+    showNotification(`Đã xoá âm thanh lỗi`, langName);
+}
+
+// Xoá nhanh âm thanh lỗi ngay ở bảng Bản dịch: rê chuột vào ô Audio → nút ▾ → Delete → Confirm.
+// Sau khi xoá, bảng hay vẽ sai các dòng còn lại (dòng dưới bị đẩy lên mang icon lỗi + "–"),
+// nên ở đây chỉ bấm xoá; side panel tải lại trang sau mỗi lượt để kiểm tra ngôn ngữ nào còn sót.
+async function deleteErrorAudioFromTable(langName) {
+    console.log(`Quick deleting error audio: ${langName}`);
+    window.manualDubAbort = null;
+
+    await closeOpenDialogs();
+
+    const findRow = () => [...document.querySelectorAll('ytgn-video-translation-row')].find(r => {
+        const nameEl = r.querySelector('.language-display-name span');
+        return nameEl && nameEl.textContent.trim() === langName;
+    });
+    const hasError = (row) => !!row && !!row.querySelector('ytgn-video-translation-cell-audio .status-error');
+
+    const row = findRow();
+    if (!hasError(row)) {
+        throw new Error('Dòng trên bảng không còn ở trạng thái lỗi');
+    }
+
+    // Nút ▾ chỉ hiện khi rê chuột vào ô Audio
+    const cell = row.querySelector('ytgn-video-translation-cell-audio #cell-container');
+    const btnMenu = await waitForElement(() => {
+        cell.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+        const el = row.querySelector('ytgn-video-translation-cell-audio ytcp-icon-button[aria-label="Audio actions menu"]');
+        return isVisible(el) ? el : null;
+    }, 5000);
+    if (!btnMenu) {
+        throw new Error('Không thấy nút ▾ ở ô Audio');
+    }
+    clickButton(btnMenu);
+
+    const menuItem = await waitForElement(() => {
+        const el = document.querySelector('ytcp-text-menu tp-yt-paper-item[test-id="delete"]');
+        return isVisible(el) ? el : null;
+    }, 3000);
+    if (!menuItem) {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+        throw new Error('Menu ▾ của ô Audio không có mục Delete');
+    }
+    menuItem.click();
+
+    const confirmBtn = () => [...document.querySelectorAll('ytcp-confirmation-dialog #confirm-button')]
+        .find(el => isVisible(el) && !el.closest('#ytgn-save-changes-confirmation-dialog'));
+    if (!await waitFor(() => confirmBtn(), 5000)) {
+        throw new Error('Không hiện hộp xác nhận Delete track');
+    }
+    clickButton(confirmBtn());
+    console.log('Đã xác nhận xoá');
+
+    // Chờ hộp xác nhận đóng, rồi chờ thêm chút cho bảng cập nhật trước khi xoá dòng tiếp theo
+    if (!await waitFor(() => !confirmBtn(), TIMEOUT)) {
+        throw new Error('Hộp xác nhận Delete track không đóng');
+    }
+    await waitFor(() => !hasError(findRow()), 3000);
+    await sleep(SETTLE);
 
     showNotification(`Đã xoá âm thanh lỗi`, langName);
 }
