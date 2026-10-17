@@ -305,10 +305,9 @@ async function deleteErrorAudioFromTable(langName) {
     }
     clickButton(btnMenu);
 
-    const menuItem = await waitForElement(() => {
-        const el = document.querySelector('ytcp-text-menu tp-yt-paper-item[test-id="delete"]');
-        return isVisible(el) ? el : null;
-    }, 3000);
+    // YouTube có thể tạo menu mới cho mỗi lần bấm ▾, menu cũ (đã ẩn) vẫn nằm trong trang → lấy mục Delete đang hiện
+    const menuItem = await waitForElement(() =>
+        [...document.querySelectorAll('ytcp-text-menu tp-yt-paper-item[test-id="delete"]')].find(isVisible) || null, 3000);
     if (!menuItem) {
         document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
         throw new Error('Menu ▾ của ô Audio không có mục Delete');
