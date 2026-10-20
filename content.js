@@ -6,7 +6,7 @@ function sleep(ms) {
 // Message handler function
 function handleMessage(request, _sender, sendResponse) {
     if (request.action === "add_single_lang") {
-        addSingleLanguage(request.langCode, request.langName, request.langNameVn, request.audio, request.descAudio)
+        addSingleLanguage(request.langCode, request.langName, request.langNameVn, request.audio, request.descAudio, request.rowLabel)
             .then((result) => sendResponse({ success: true, ...(result || {}) }))
             .catch((error) => {
                 console.error(error);
@@ -74,7 +74,7 @@ window.manualDubHelperLoaded = true;
 // Trả về { onVideo, mainAdded, descState }
 // onVideo: ngôn ngữ đã có trên video từ trước (mở hộp ngôn ngữ từ bảng Bản dịch)
 // descState: 'present' (đã có) / 'added' (vừa thêm) / 'blocked' (menu ⋮ không có Add descriptive audio) / 'skipped' (không làm)
-async function addSingleLanguage(code, name, nameVn, audio, descAudio) {
+async function addSingleLanguage(code, name, nameVn, audio, descAudio, rowLabel) {
     console.log(`Adding language: ${code} - ${nameVn}`);
     window.manualDubAbort = null;
 
@@ -119,7 +119,7 @@ async function addSingleLanguage(code, name, nameVn, audio, descAudio) {
                 const textEl = item.querySelector('yt-formatted-string.item-text');
                 const displayName = (textEl ? textEl.textContent : item.textContent).trim();
                 await closeOpenDialogs();
-                await openExistingLanguage(displayName, name, nameVn);
+                await openExistingLanguage(displayName, name, nameVn, rowLabel);
                 onVideo = true;
             } else {
                 item.click();
@@ -197,8 +197,8 @@ async function addSingleLanguage(code, name, nameVn, audio, descAudio) {
 }
 
 // Mở hộp ngôn ngữ của 1 ngôn ngữ đã có trên video bằng cách bấm tên ở bảng Bản dịch
-async function openExistingLanguage(displayName, name, nameVn) {
-    const names = [displayName, name, nameVn].filter(Boolean).map(n => n.trim().toLowerCase());
+async function openExistingLanguage(displayName, name, nameVn, rowLabel) {
+    const names = [displayName, name, nameVn, rowLabel].filter(Boolean).map(n => n.trim().toLowerCase());
     const btn = [...document.querySelectorAll('ytgn-video-translation-row .language-display-name')]
         .find(el => names.includes(el.textContent.trim().toLowerCase()));
     if (!btn) {

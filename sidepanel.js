@@ -471,12 +471,16 @@ async function addDubForLang(index, tabId = null) {
 
         if (stopReason) throw new Error(stopReason);
 
+        // Tên ngôn ngữ đúng như trên bảng Bản dịch (nếu đã có trên video) để mở đúng dòng
+        const existingRow = await readRowOfLang(tabId, item.code, 0);
+
         console.log('Sending message to content script...');
         const response = await sendToTab(tabId, {
             action: "add_single_lang",
             langCode: item.code,
             langName: lang.name,
             langNameVn: lang.nameVn || lang.name,
+            rowLabel: existingRow ? existingRow.label : '',
             audio: audio,
             descAudio: descAudio
         });
@@ -683,7 +687,7 @@ async function deleteErrorAudios(quick) {
                 }
                 setDeleteProgress(btn, `${i + 1}/${errors.length}`);
                 try {
-                    const response = await sendToTab(tab.id, { action: 'delete_error_audio', langName: errors[i].name });
+                    const response = await sendToTab(tab.id, { action: 'delete_error_audio', langName: errors[i].label || errors[i].name });
                     if (!response || !response.success) {
                         throw new Error(response ? response.error : 'Không nhận được phản hồi từ trang');
                     }
@@ -773,7 +777,7 @@ async function quickDeletePasses(tab, errors, btn) {
             if (deleteStopRequested || !await isTabOnVideo(tab.id, videoId)) break;
             setDeleteProgress(btn, `lượt ${pass}: ${i + 1}/${remaining.length}`);
             try {
-                const response = await sendToTab(tab.id, { action: 'delete_error_audio_quick', langName: remaining[i].name });
+                const response = await sendToTab(tab.id, { action: 'delete_error_audio_quick', langName: remaining[i].label || remaining[i].name });
                 if (!response || !response.success) {
                     throw new Error(response ? response.error : 'Không nhận được phản hồi từ trang');
                 }
@@ -927,6 +931,8 @@ async function readTranslationRows(videoId, waitForLoad) {
         return {
             code: vt.languageCode || null,
             name: vt.displayName || (nameEl ? nameEl.textContent.trim() : ''),
+            // Tên đúng như hiện trên bảng (ngôn ngữ tiêu đề & mô tả có thêm hậu tố, vd "Spanish (Mexico) (title and description language)")
+            label: nameEl ? nameEl.textContent.trim() : '',
             status: status,
             text: status === 'none' ? '' : text
         };
