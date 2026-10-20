@@ -19,6 +19,7 @@ let stopReason = null; // Lý do dừng "Chạy tất cả" (chuyển tab / rờ
 let videoExtraLangs = []; // Ngôn ngữ có trên video nhưng chưa có trong danh sách
 
 document.addEventListener('DOMContentLoaded', () => {
+    showWhatsNew();
     loadSelectedLangs();
     renderLanguageSelect();
     checkCurrentTab();
@@ -856,6 +857,19 @@ function sendToTab(tabId, message) {
                 resolve(response);
             }
         });
+    });
+}
+
+// Khung "Có gì mới": background đánh dấu khi extension vừa cập nhật, hiện tới khi người dùng bấm ✕
+function showWhatsNew() {
+    const box = document.getElementById('whatsNew');
+    const version = chrome.runtime.getManifest().version;
+    chrome.storage.local.get(['whatsNewVersion'], (result) => {
+        box.hidden = result.whatsNewVersion !== version;
+    });
+    document.getElementById('btnCloseWhatsNew').addEventListener('click', () => {
+        box.hidden = true;
+        chrome.storage.local.remove('whatsNewVersion');
     });
 }
 

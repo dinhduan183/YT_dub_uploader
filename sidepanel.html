@@ -101,6 +101,33 @@
         .status-ok { background: var(--ok-bg); color: var(--ok); }
         .status-warn { background: var(--warn-bg); color: var(--warn); }
 
+        /* Khung "Có gì mới" sau khi cập nhật */
+        .whats-new {
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+            padding: 8px 10px;
+            border-radius: 8px;
+            background: var(--surface);
+            border: 1px solid var(--accent);
+            font-size: 11px;
+            line-height: 1.45;
+            flex-shrink: 0;
+        }
+        .whats-new[hidden] { display: none; }
+        .whats-new-body { flex: 1; }
+        .whats-new-title { font-weight: 600; color: var(--accent); margin-bottom: 2px; }
+        .whats-new-close {
+            background: transparent;
+            border: none;
+            color: var(--text-2);
+            font-size: 13px;
+            line-height: 1;
+            cursor: pointer;
+            padding: 2px 4px;
+        }
+        .whats-new-close:hover { color: var(--text); }
+
         /* Khối */
         .section {
             background: var(--surface);
@@ -419,6 +446,14 @@
             <img class="header-icon" src="new_icon_48.png" alt="">
             <span class="header-title">YT Dub Uploader</span>
             <span class="header-version">v4.1</span>
+        </div>
+
+        <div id="whatsNew" class="whats-new" hidden>
+            <div class="whats-new-body">
+                <div class="whats-new-title">🎉 Có gì mới ở v4.1</div>
+                <div>Xoá nhanh đã hỗ trợ giao diện YouTube tiếng Việt.</div>
+            </div>
+            <button class="whats-new-close" id="btnCloseWhatsNew" title="Đóng">✕</button>
         </div>
         
         <div id="statusBox" class="status-box status-warn">
