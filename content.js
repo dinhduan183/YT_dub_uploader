@@ -291,7 +291,8 @@ async function deleteErrorAudioFromTable(langName) {
     const cell = row.querySelector('ytgn-video-translation-cell-audio #cell-container');
     const btnMenu = await waitForElement(() => {
         cell.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-        const el = row.querySelector('ytgn-video-translation-cell-audio ytcp-icon-button[aria-label="Audio actions menu"]');
+        // Tìm theo class, không theo aria-label: nhãn đổi theo ngôn ngữ giao diện và cách viết hoa của từng bản YouTube
+        const el = row.querySelector('ytgn-video-translation-cell-audio ytcp-icon-button.edit-triangle-icon');
         return isVisible(el) ? el : null;
     }, 5000);
     if (!btnMenu) {
