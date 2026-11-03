@@ -5,6 +5,8 @@ let audioFile = null; // File âm thanh dùng chung cho mọi ngôn ngữ (chỉ
 let descAudioFile = null; // File âm thanh mô tả dùng chung cho mọi ngôn ngữ (chỉ giữ trong phiên)
 let isRunningAll = false;
 let isAdding = false; // Đang thêm 1 ngôn ngữ (lẻ hoặc trong Chạy tất cả)
+let addingItem = null; // Ngôn ngữ đang thêm - hiện dòng tiến trình dưới tên
+let progressText = ''; // Bước đang làm của ngôn ngữ đang thêm
 let isSyncing = false;
 let isDeleting = false; // Đang xoá âm thanh lỗi
 let deleteStopRequested = false; // Đã bấm Dừng khi đang xoá âm thanh lỗi
@@ -182,7 +184,10 @@ function renderLangList() {
             <div class="lang-item">
                 <div class="lang-info">
                     <span class="lang-code">${item.code}</span>
-                    <span class="lang-name">${displayName}</span>
+                    <div class="lang-text">
+                        <span class="lang-name">${displayName}</span>
+                        ${item === addingItem ? `<span class="lang-progress" id="langProgress">${progressText}</span>` : ''}
+                    </div>
                 </div>
                 <span class="lang-status ${statusClass}">${statusText}</span>
                 ${hasDesc ? '<span class="lang-status status-done" title="Đã có âm thanh mô tả">Mô tả</span>' : ''}
@@ -223,6 +228,7 @@ function renderLangList() {
     }
 
     container.innerHTML = itemsHtml + extrasHtml;
+    document.getElementById('langCount').textContent = selectedLangs.length;
 
     // Gắn event listener cho các nút "Thêm"
     container.querySelectorAll('.btn-add:not(.btn-add-extra)').forEach(btn => {
@@ -439,6 +445,8 @@ async function addDubForLang(index, tabId = null) {
     item.ytStatus = null;
     item.ytText = '';
     isAdding = true;
+    addingItem = item;
+    progressText = 'Đang chuẩn bị…';
     updateBusyUI();
     saveSelectedLangs();
     renderLangList();
@@ -530,6 +538,8 @@ async function addDubForLang(index, tabId = null) {
     }
 
     isAdding = false;
+    addingItem = null;
+    progressText = '';
     updateBusyUI();
     saveSelectedLangs();
     renderLangList();
@@ -841,16 +851,86 @@ async function reloadTranslationsTab(tabId, videoId) {
 // Base64 chia phần, bội số của 4 để mỗi phần tự giải mã được
 const AUDIO_CHUNK_SIZE = 8 * 1024 * 1024;
 
-// Gửi file theo từng phần - Chrome giới hạn 64MiB mỗi tin nhắn. Trả về thông tin file, hoặc null nếu chưa chọn
+const bridgeChannel = new BroadcastChannel('ytdub-bridge');
+
+// Gửi thẳng file gốc qua trạm trung chuyển trong tab (bridge.html) - không sao chép nội dung file.
+// Trả về true nếu trang đã nhận và chép xong, false nếu trạm không trả lời hoặc chép lỗi (khi đó dùng cách gửi base64)
+async function sendViaBridge(tabId, slot, key, file) {
+    let token = null;
+    for (let i = 0; i < 10 && !token; i++) {
+        const res = await sendToTab(tabId, { action: 'bridge_token' });
+        token = res && res.token;
+        if (!token) await new Promise(resolve => setTimeout(resolve, 300));
+    }
+    if (!token) return false;
+
+    const id = `${Date.now()}-${Math.random()}`;
+    return new Promise((resolve) => {
+        const finish = (ok) => {
+            clearTimeout(timer);
+            bridgeChannel.removeEventListener('message', onAck);
+            resolve(ok);
+        };
+        // Trạm phải báo đã nhận trong 5 giây; sau đó chờ trang chép file vào bộ nhớ (file dài trên máy chậm có thể lâu)
+        let timer = setTimeout(() => finish(false), 5000);
+        const onAck = (e) => {
+            if (!e.data || e.data.token !== token || e.data.ack !== id) return;
+            if (e.data.received) {
+                clearTimeout(timer);
+                timer = setTimeout(() => finish(false), 5 * 60000);
+                setProgress(`Đang chép file ${slot === 'desc' ? 'âm thanh mô tả' : 'âm thanh gốc'} vào trang…`);
+            } else if (e.data.done) {
+                finish(true);
+            } else if (e.data.error) {
+                console.log('Trang không chép được file:', e.data.error);
+                finish(false);
+            }
+        };
+        bridgeChannel.addEventListener('message', onAck);
+        bridgeChannel.postMessage({ token: token, id: id, slot: slot, key: key, file: file });
+    });
+}
+
+// Gửi file sang trang: ưu tiên trạm trung chuyển, không được thì gửi base64 theo từng phần
+// (Chrome giới hạn 64MiB mỗi tin nhắn). Trả về thông tin file, hoặc null nếu chưa chọn
 async function sendAudioFile(tabId, slot, file) {
     if (!file) return null;
-    const data = await readFileAsBase64(file);
-    await sendToTab(tabId, { action: 'audio_reset', slot: slot });
-    for (let i = 0; i < data.length; i += AUDIO_CHUNK_SIZE) {
-        await sendToTab(tabId, { action: 'audio_chunk', slot: slot, data: data.slice(i, i + AUDIO_CHUNK_SIZE) });
+    // Trang đã giữ đúng file này từ ngôn ngữ trước → không gửi lại (file dài gửi mỗi lần rất chậm)
+    const key = `${file.name}|${file.size}|${file.lastModified}`;
+    const check = await sendToTab(tabId, { action: 'audio_has', slot: slot, key: key });
+    const label = slot === 'desc' ? 'âm thanh mô tả' : 'âm thanh gốc';
+    if (!check || !check.has) {
+        setProgress(`Đang chuyển file ${label} sang trang…`);
+        if (await sendViaBridge(tabId, slot, key, file)) {
+            console.log('Đã gửi file trực tiếp qua trạm trung chuyển:', file.name);
+            return { name: file.name, type: file.type, size: file.size, key: key };
+        }
+        console.log('Trạm trung chuyển không trả lời - gửi base64');
+        setProgress(`Đang đọc file ${label} (dự phòng)…`);
+        const data = await readFileAsBase64(file);
+        await sendToTab(tabId, { action: 'audio_reset', slot: slot });
+        const total = Math.ceil(data.length / AUDIO_CHUNK_SIZE);
+        for (let i = 0; i < data.length; i += AUDIO_CHUNK_SIZE) {
+            setProgress(`Đang gửi file ${label} sang trang (dự phòng)… ${i / AUDIO_CHUNK_SIZE + 1}/${total}`);
+            await sendToTab(tabId, { action: 'audio_chunk', slot: slot, data: data.slice(i, i + AUDIO_CHUNK_SIZE) });
+        }
+        await sendToTab(tabId, { action: 'audio_commit', slot: slot, key: key, name: file.name, type: file.type });
     }
-    return { name: file.name, type: file.type, size: file.size };
+    return { name: file.name, type: file.type, size: file.size, key: key };
 }
+
+// Cập nhật dòng tiến trình của ngôn ngữ đang thêm (chỉ sửa chữ, không vẽ lại cả danh sách)
+function setProgress(text) {
+    if (!isAdding) return;
+    progressText = text;
+    const el = document.getElementById('langProgress');
+    if (el) el.textContent = text;
+}
+
+// Content script báo bước đang làm trên YouTube Studio
+chrome.runtime.onMessage.addListener((request) => {
+    if (request.action === 'dub_progress') setProgress(request.text);
+});
 
 function sendToTab(tabId, message) {
     return new Promise((resolve, reject) => {

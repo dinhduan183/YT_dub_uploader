@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "YT Dub Uploader",
-  "version": "4.2",
+  "version": "5.0",
   "description": "Trợ giúp thêm dub thủ công - chỉ mở dialog, bạn làm phần còn lại",
   "permissions": [
     "activeTab",
@@ -29,6 +29,12 @@
       "48": "new_icon_48.png"
     }
   },
+  "web_accessible_resources": [
+    {
+      "resources": ["bridge.html"],
+      "matches": ["https://studio.youtube.com/*"]
+    }
+  ],
   "background": {
     "service_worker": "background.js"
   }

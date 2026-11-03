@@ -33,6 +33,32 @@ function handleMessage(request, _sender, sendResponse) {
         return;
     }
 
+    // Đã nhận đủ các phần → ghép thành File, ghi nhớ để lần sau không phải gửi lại
+    if (request.action === "audio_commit") {
+        const parts = window.manualDubAudioParts[request.slot] || [];
+        window.manualDubAudioParts[request.slot] = [];
+        window.manualDubAudioFiles = window.manualDubAudioFiles || {};
+        window.manualDubAudioFiles[request.slot] = {
+            key: request.key,
+            file: new File(parts, request.name, { type: request.type || 'audio/mpeg' })
+        };
+        sendResponse({ success: true });
+        return;
+    }
+
+    // Trang đã có sẵn đúng file này chưa
+    if (request.action === "audio_has") {
+        const saved = (window.manualDubAudioFiles || {})[request.slot];
+        sendResponse({ has: !!request.key && !!saved && saved.key === request.key });
+        return;
+    }
+
+    // Mã của trạm trung chuyển file, null nếu trạm chưa sẵn sàng
+    if (request.action === "bridge_token") {
+        sendResponse({ token: window.manualDubBridgeReady ? window.manualDubBridgeToken : null });
+        return;
+    }
+
     if (request.action === "audio_chunk") {
         const bin = atob(request.data);
         const bytes = new Uint8Array(bin.length);
@@ -47,6 +73,17 @@ function handleMessage(request, _sender, sendResponse) {
         window.manualDubAbort = request.reason || 'Đã dừng';
         sendResponse({ success: true });
         return;
+    }
+}
+
+// Báo side panel bước đang làm để hiện dưới ngôn ngữ đang chạy
+function reportProgress(text) {
+    try {
+        chrome.runtime.sendMessage({ action: 'dub_progress', text: text }, () => {
+            void chrome.runtime.lastError; // Side panel đã đóng - bỏ qua
+        });
+    } catch (e) {
+        // Extension vừa cập nhật/tải lại - bỏ qua
     }
 }
 
@@ -71,6 +108,41 @@ window.manualDubMessageHandler = handleMessage;
 chrome.runtime.onMessage.addListener(handleMessage);
 window.manualDubHelperLoaded = true;
 
+// Trạm trung chuyển file (bridge.html): nhận file gốc từ side panel mà không phải sao chép qua base64.
+// content.js được inject lại nhiều lần → chỉ tạo 1 trạm cho mỗi lần tải trang
+if (!window.manualDubBridgeToken || !document.getElementById('ytdub-bridge')) {
+    const token = crypto.randomUUID();
+    window.manualDubBridgeToken = token;
+    window.manualDubBridgeReady = false;
+    const frame = document.createElement('iframe');
+    frame.id = 'ytdub-bridge';
+    frame.style.display = 'none';
+    frame.src = chrome.runtime.getURL('bridge.html') + '#' + token;
+    frame.addEventListener('load', () => {
+        const channel = new MessageChannel();
+        channel.port1.onmessage = async (e) => {
+            const { id, slot, key, file } = e.data || {};
+            if (!(file instanceof File)) return;
+            channel.port1.postMessage({ ack: id, received: true });
+            // Chép nội dung vào bộ nhớ của trang 1 lần: file trên ổ cứng bị đổi giữa chừng
+            // (OneDrive đồng bộ, diệt virus quét...) thì YouTube vẫn đọc được, không lỗi NotReadableError
+            try {
+                const copy = new File([await file.arrayBuffer()], file.name, { type: file.type, lastModified: file.lastModified });
+                window.manualDubAudioFiles = window.manualDubAudioFiles || {};
+                window.manualDubAudioFiles[slot] = { key: key, file: copy };
+                console.log('Đã nhận file trực tiếp:', file.name);
+                channel.port1.postMessage({ ack: id, done: true });
+            } catch (err) {
+                console.error('Không chép được file vào trang:', err);
+                channel.port1.postMessage({ ack: id, error: err.message || String(err) });
+            }
+        };
+        frame.contentWindow.postMessage({ type: 'ytdub-port', token: token }, new URL(frame.src).origin, [channel.port2]);
+        window.manualDubBridgeReady = true;
+    });
+    document.documentElement.appendChild(frame);
+}
+
 // Trả về { onVideo, mainAdded, descState }
 // onVideo: ngôn ngữ đã có trên video từ trước (mở hộp ngôn ngữ từ bảng Bản dịch)
 // descState: 'present' (đã có) / 'added' (vừa thêm) / 'blocked' (menu ⋮ không có Add descriptive audio) / 'skipped' (không làm)
@@ -79,6 +151,7 @@ async function addSingleLanguage(code, name, nameVn, audio, descAudio, rowLabel)
     window.manualDubAbort = null;
 
     // BƯỚC 0: Đóng hộp thoại / menu còn mở từ lần chạy dở trước
+    reportProgress('Đang mở hộp ngôn ngữ…');
     await closeOpenDialogs();
     
     // BƯỚC 1: Click "Add language" - click vào button bên trong
@@ -171,7 +244,7 @@ async function addSingleLanguage(code, name, nameVn, audio, descAudio, rowLabel)
             showNotification(nameVn, code);
             return { onVideo, mainAdded, descState: 'skipped' };
         }
-        await uploadAudio('main', audio);
+        await uploadAudio('main', audio, 'âm thanh gốc');
         mainAdded = true;
     }
 
@@ -186,6 +259,7 @@ async function addSingleLanguage(code, name, nameVn, audio, descAudio, rowLabel)
 
     // BƯỚC 6: Có thay đổi thì bấm Cập nhật, không thì đóng hộp ngôn ngữ
     if (mainAdded || descState === 'added') {
+        reportProgress('Chờ nút Cập nhật bật…');
         await clickUpdate();
     } else {
         await closeOpenDialogs();
@@ -345,7 +419,7 @@ async function addDescriptiveAudio(descAudio) {
     menuItem.click();
     console.log('Clicked Add descriptive audio');
 
-    await uploadAudio('desc', descAudio);
+    await uploadAudio('desc', descAudio, 'âm thanh mô tả');
 
     const shown = await waitFor(() =>
         findVisible('#language-details-source-label-descriptive-audio'), TIMEOUT);
@@ -359,12 +433,21 @@ async function addDescriptiveAudio(descAudio) {
 // (dùng var vì content.js được inject lại mỗi lần bấm - const/let sẽ lỗi khai báo trùng)
 var TIMEOUT = 15000;
 var SETTLE = 300;
+// Thời gian chờ tối đa cho việc tải file âm thanh lên YouTube
+var UPLOAD_TIMEOUT = 30 * 60000;
 
-async function waitFor(check, timeout) {
+// label: có thì báo side panel kèm số giây đã chờ
+async function waitFor(check, timeout, label) {
     const start = Date.now();
+    let lastSec = -1;
     while (Date.now() - start < timeout) {
         checkAbort();
         if (check()) return true;
+        const sec = Math.floor((Date.now() - start) / 1000);
+        if (label && sec !== lastSec) {
+            lastSec = sec;
+            reportProgress(`${label} ${sec >= 60 ? `${Math.floor(sec / 60)}p${sec % 60}s` : `${sec}s`}`);
+        }
         await sleep(200);
     }
     return false;
@@ -447,7 +530,8 @@ async function closeOpenDialogs() {
     await sleep(SETTLE);
 }
 
-async function uploadAudio(slot, audio) {
+async function uploadAudio(slot, audio, label) {
+    reportProgress(`Mở hộp tải ${label}…`);
     // Chờ hộp "Âm thanh bằng..." hiện ra - lấy đúng hộp đang hiện, mọi thao tác sau chỉ làm trong hộp này
     const dialog = await waitForElement(() =>
         [...document.querySelectorAll('ytgn-audio-upload-dialog')].find(d => isVisible(d.querySelector('#upload-button'))) || null);
@@ -456,16 +540,14 @@ async function uploadAudio(slot, audio) {
     }
     await sleep(SETTLE);
 
-    const input = dialog.querySelector('#audio-file-loader');
-    if (!input) {
+    if (!dialog.querySelector('#audio-file-loader')) {
         throw new Error('Không tìm thấy ô chọn file âm thanh');
     }
 
-    // Ghép lại File từ các phần đã nhận; thiếu dữ liệu (trang tải lại giữa chừng) thì báo lỗi, không tải file rỗng
-    const parts = window.manualDubAudioParts || {};
-    const file = new File(parts[slot] || [], audio.name, { type: audio.type || 'audio/mpeg' });
-    parts[slot] = [];
-    if (file.size === 0 || (audio.size && file.size !== audio.size)) {
+    // File đã nhận (qua trạm trung chuyển hoặc base64); thiếu/sai file (trang tải lại giữa chừng) thì báo lỗi, không tải file rỗng
+    const saved = (window.manualDubAudioFiles || {})[slot];
+    const file = saved && saved.key === audio.key ? saved.file : null;
+    if (!file || file.size === 0 || (audio.size && file.size !== audio.size)) {
         throw new Error('Dữ liệu file âm thanh bị thiếu, hãy thử lại');
     }
 
@@ -475,23 +557,31 @@ async function uploadAudio(slot, audio) {
     const observer = new MutationObserver(() => { changed = true; });
     observer.observe(dialog, { subtree: true, childList: true, characterData: true });
 
-    const dt = new DataTransfer();
-    dt.items.add(file);
-    input.files = dt.files;
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-    console.log('Đã gán file:', audio.name);
-
     // Chờ tên file mới hiện trong hộp thoại và nút Xuất bản bật lên rồi mới bấm
     const publishReady = () => {
         const btn = dialog.querySelector('#publish-button');
         return btn && isVisible(btn) && !btn.hasAttribute('disabled') ? btn : null;
     };
-    let shown;
+    const nameShown = () => {
+        const el = dialog.querySelector('.file-name');
+        return changed && el && el.textContent.includes(audio.name);
+    };
+    // Máy chậm: hộp tải có thể chưa sẵn sàng lúc gán nên YouTube bỏ qua file →
+    // chưa thấy tên file sau 10 giây thì gán lại (lấy lại ô chọn file vì YouTube có thể đã tạo ô mới)
+    const ATTEMPTS = 6;
+    let shown = false;
     try {
-        shown = await waitFor(() => {
-            const el = dialog.querySelector('.file-name');
-            return changed && el && el.textContent.includes(audio.name);
-        }, 10000);
+        for (let attempt = 1; attempt <= ATTEMPTS && !shown; attempt++) {
+            const input = dialog.querySelector('#audio-file-loader');
+            if (input) {
+                const dt = new DataTransfer();
+                dt.items.add(file);
+                input.files = dt.files;
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+                console.log(`Đã gán file (lần ${attempt}):`, audio.name);
+            }
+            shown = await waitFor(nameShown, 10000, `Chờ YouTube nạp file ${label} (lần ${attempt}/${ATTEMPTS})…`);
+        }
     } finally {
         observer.disconnect();
     }
@@ -500,6 +590,7 @@ async function uploadAudio(slot, audio) {
     }
     await sleep(1500);
 
+    reportProgress('Chờ nút Xuất bản bật…');
     const btnPublish = await waitForElement(publishReady, 10000);
     if (!btnPublish) {
         throw new Error('Nút Xuất bản chưa bấm được');
@@ -508,10 +599,10 @@ async function uploadAudio(slot, audio) {
     (btnPublish.querySelector('button') || btnPublish).click();
     console.log('Clicked Xuất bản');
 
-    // Chờ hộp tải đóng lại
-    const closed = await waitFor(() => !isVisible(dialog.querySelector('#publish-button')), 60000);
+    // Chờ hộp tải đóng lại - file dài trên máy/mạng chậm có thể tải lên mất nhiều phút
+    const closed = await waitFor(() => !isVisible(dialog.querySelector('#publish-button')), UPLOAD_TIMEOUT, `Đang tải ${label} lên YouTube…`);
     if (!closed) {
-        throw new Error('Hộp tải âm thanh chưa đóng sau 60 giây');
+        throw new Error(`Hộp tải âm thanh chưa đóng sau ${UPLOAD_TIMEOUT / 60000} phút`);
     }
     await sleep(SETTLE);
 }
@@ -522,9 +613,9 @@ async function clickUpdate() {
     if (!btnUpdate) {
         throw new Error('Không tìm thấy nút Cập nhật');
     }
-    const ready = await waitFor(() => !btnUpdate.hasAttribute('disabled'), 60000);
+    const ready = await waitFor(() => !btnUpdate.hasAttribute('disabled'), UPLOAD_TIMEOUT, 'Chờ nút Cập nhật bật…');
     if (!ready) {
-        throw new Error('Nút Cập nhật chưa bật sau 60 giây');
+        throw new Error(`Nút Cập nhật chưa bật sau ${UPLOAD_TIMEOUT / 60000} phút`);
     }
     await sleep(1000);
     checkAbort();

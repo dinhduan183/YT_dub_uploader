@@ -367,6 +367,18 @@
             min-width: 30px;
             flex-shrink: 0;
         }
+        .lang-text {
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+        }
+        .lang-progress {
+            font-size: 10px;
+            color: var(--text-2);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
         .lang-name {
             font-size: 12px;
             white-space: nowrap;
@@ -445,14 +457,15 @@
         <div class="header">
             <img class="header-icon" src="new_icon_48.png" alt="">
             <span class="header-title">YT Dub Uploader</span>
-            <span class="header-version">v4.2</span>
+            <span class="header-version">v5.0</span>
         </div>
 
         <div id="whatsNew" class="whats-new" hidden>
             <div class="whats-new-body">
-                <div class="whats-new-title">🎉 Có gì mới ở v4.2</div>
-                <div>Xoá nhanh đã hỗ trợ giao diện YouTube tiếng Việt.</div>
-                <div>Sửa lỗi không nhận ra dòng ngôn ngữ tiêu đề và mô tả.</div>
+                <div class="whats-new-title">🎉 Có gì mới ở v5.0</div>
+                <div>Chạy nhanh và ổn định hơn trên máy chậm (VPS): file âm thanh chỉ chuyển sang trang 1 lần, không còn treo ở hộp tải.</div>
+                <div>Hiện tiến trình từng bước dưới ngôn ngữ đang chạy.</div>
+                <div>Hiện số ngôn ngữ trong danh sách.</div>
             </div>
             <button class="whats-new-close" id="btnCloseWhatsNew" title="Đóng">✕</button>
         </div>
@@ -506,7 +519,7 @@
 
         <div class="section flex-grow">
             <div class="section-header">
-                <span class="section-title">Danh sách ngôn ngữ</span>
+                <span class="section-title">Danh sách ngôn ngữ (<span id="langCount">0</span>)</span>
                 <div class="toolbar">
                     <button class="btn-tool" id="btnSync" title="Reload trạng thái từ YouTube">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 11-3-6.7M21 3v6h-6"/></svg>
