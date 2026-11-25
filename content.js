@@ -15,6 +15,27 @@ function handleMessage(request, _sender, sendResponse) {
         return true; // Keep channel open for async response
     }
     
+    // Chạy tất cả / Auto Fix: đọc trạng thái âm thanh trong hộp ngôn ngữ, và xoá 1 dòng âm thanh trong hộp
+    if (request.action === "inspect_lang_audio" || request.action === "delete_track_dialog") {
+        (request.action === "inspect_lang_audio" ? inspectLanguageAudio(request.langName) : deleteTrackOfLanguage(request.langName, request.kind))
+            .then((result) => sendResponse({ success: true, ...(result || {}) }))
+            .catch((error) => {
+                console.error(error);
+                sendResponse({ success: false, error: error.message });
+            });
+        return true;
+    }
+
+    if (request.action === "delete_error_audio_auto") {
+        deleteErrorAudioAuto(request.langName)
+            .then((result) => sendResponse({ success: true, result: result }))
+            .catch((error) => {
+                console.error(error);
+                sendResponse({ success: false, error: error.message });
+            });
+        return true;
+    }
+
     if (request.action === "delete_error_audio" || request.action === "delete_error_audio_quick") {
         (request.action === "delete_error_audio_quick" ? deleteErrorAudioFromTable : deleteErrorAudio)(request.langName)
             .then(() => sendResponse({ success: true }))
@@ -146,6 +167,7 @@ if (!window.manualDubBridgeToken || !document.getElementById('ytdub-bridge')) {
 // Trả về { onVideo, mainAdded, descState }
 // onVideo: ngôn ngữ đã có trên video từ trước (mở hộp ngôn ngữ từ bảng Bản dịch)
 // descState: 'present' (đã có) / 'added' (vừa thêm) / 'blocked' (menu ⋮ không có Add descriptive audio) / 'skipped' (không làm)
+//            / 'deleted' (âm thanh mô tả cũ bị lỗi → đã xoá và đóng hộp, side panel thêm lại sau)
 async function addSingleLanguage(code, name, nameVn, audio, descAudio, rowLabel) {
     console.log(`Adding language: ${code} - ${nameVn}`);
     window.manualDubAbort = null;
@@ -232,6 +254,16 @@ async function addSingleLanguage(code, name, nameVn, audio, descAudio, rowLabel)
     }
     await sleep(SETTLE);
 
+    // BƯỚC 3b: Âm thanh mô tả cũ bị lỗi (vd ngôn ngữ đã xoá nhanh âm thanh chính nên không còn trên bảng, nhưng vẫn còn âm thanh mô tả)
+    // → xoá rồi đóng hộp; thêm ngay thì hộp vừa xoá có thể chưa hiện nút Add, side panel sẽ quay lại thêm sau
+    if (findVisible('#language-details-source-label-descriptive-audio') && isDialogTrackError('descriptive-audio')) {
+        reportProgress('Đang xoá âm thanh mô tả lỗi…');
+        await deleteTrackInDialog('descriptive-audio');
+        await saveLanguageDialog();
+        showNotification('Đã xoá âm thanh mô tả lỗi', nameVn);
+        return { onVideo, mainAdded: false, descState: 'deleted' };
+    }
+
     // BƯỚC 4: Dòng Audio còn nút "Add" = chưa có âm thanh gốc
     let mainAdded = false;
     const btnAddDub = [...document.querySelectorAll('#language-details-text-button-audio, #language-details-text-button-dub')].find(isVisible);
@@ -288,6 +320,70 @@ async function deleteErrorAudio(langName) {
     console.log(`Deleting error audio: ${langName}`);
     window.manualDubAbort = null;
 
+    await openLanguageDialog(langName);
+    await deleteTrackInDialog('audio');
+    await saveLanguageDialog();
+
+    showNotification(`Đã xoá âm thanh lỗi`, langName);
+}
+
+// Tự chọn cách xoá theo trạng thái trong hộp ngôn ngữ:
+// - Chính lỗi, mô tả còn tốt → đóng hộp, trả 'quick' để side panel xoá nhanh ở bảng (xoá nhanh chỉ xoá âm thanh chính)
+// - Chính lỗi, mô tả lỗi / không có → xoá âm thanh chính trong hộp (mô tả xoá theo) → 'main'
+// - Chính còn tốt / không có, mô tả lỗi → xoá âm thanh mô tả trong hộp, giữ âm thanh chính → 'desc'
+// - Không có gì lỗi → đóng hộp → 'none'
+async function deleteErrorAudioAuto(langName) {
+    console.log(`Auto deleting error audio: ${langName}`);
+    window.manualDubAbort = null;
+
+    await openLanguageDialog(langName);
+    const mainErr = isDialogTrackError('audio');
+    const descExists = !!findVisible('#language-details-source-label-descriptive-audio');
+    const descErr = descExists && isDialogTrackError('descriptive-audio');
+
+    let result = 'none';
+    if (mainErr && descExists && !descErr) {
+        result = 'quick';
+    } else if (mainErr) {
+        await deleteTrackInDialog('audio');
+        result = 'main';
+    } else if (descErr) {
+        await deleteTrackInDialog('descriptive-audio');
+        result = 'desc';
+    }
+
+    if (result === 'main' || result === 'desc') {
+        await saveLanguageDialog();
+        showNotification(result === 'main' ? 'Đã xoá âm thanh lỗi' : 'Đã xoá âm thanh mô tả lỗi', langName);
+    } else {
+        await closeOpenDialogs();
+    }
+    return result;
+}
+
+// Mở hộp ngôn ngữ, đọc trạng thái âm thanh chính / mô tả rồi đóng (không thay đổi gì).
+// main / desc: 'error' (lỗi) / 'ok' (còn) / 'none' (không có)
+async function inspectLanguageAudio(langName) {
+    window.manualDubAbort = null;
+    await openLanguageDialog(langName);
+    const main = findVisible('#language-details-text-button-audio') ? 'none'
+        : isDialogTrackError('audio') ? 'error' : 'ok';
+    const desc = !findVisible('#language-details-source-label-descriptive-audio') ? 'none'
+        : isDialogTrackError('descriptive-audio') ? 'error' : 'ok';
+    await closeOpenDialogs();
+    return { main, desc };
+}
+
+// Xoá 1 dòng âm thanh trong hộp ngôn ngữ (kind: 'audio' / 'descriptive-audio') rồi Cập nhật
+async function deleteTrackOfLanguage(langName, kind) {
+    window.manualDubAbort = null;
+    await openLanguageDialog(langName);
+    await deleteTrackInDialog(kind);
+    await saveLanguageDialog();
+    showNotification(kind === 'audio' ? 'Đã xoá âm thanh lỗi' : 'Đã xoá âm thanh mô tả lỗi', langName);
+}
+
+async function openLanguageDialog(langName) {
     await closeOpenDialogs();
     await openExistingLanguage(langName, langName, langName);
 
@@ -297,48 +393,64 @@ async function deleteErrorAudio(langName) {
         throw new Error('Hộp ngôn ngữ không hiện ra');
     }
     await sleep(SETTLE);
+}
 
-    const btnMore = await waitForElement(() => findVisible('#language-details-more-options-button-audio'));
+// Dòng âm thanh trong hộp ngôn ngữ đang lỗi không (kind: 'audio' / 'descriptive-audio').
+// YouTube hiện icon warning (Không xử lý được) / not_interested (Đã xoá) ở dòng lỗi; dự phòng thêm theo chữ trạng thái.
+function isDialogTrackError(kind) {
+    const icon = findVisible(`#status-icon-${kind}`);
+    if (icon && /warning|error|not_interested/i.test(icon.getAttribute('icon') || '')) return true;
+    const label = findVisible(`#language-details-status-label-${kind}`);
+    const text = label ? label.textContent.trim().normalize('NFC') : '';
+    return /không xử lý|đã xoá|đã xóa|failed|removed/i.test(text);
+}
+
+// Menu ⋮ của dòng âm thanh trong hộp ngôn ngữ → Delete → xác nhận, chờ dòng đó biến mất
+async function deleteTrackInDialog(kind) {
+    const label = kind === 'audio' ? 'Audio' : 'Descriptive audio';
+    const btnMore = await waitForElement(() => findVisible(`#language-details-more-options-button-${kind}`));
     if (!btnMore) {
-        throw new Error('Không tìm thấy nút ⋮ ở dòng Audio');
+        throw new Error(`Không tìm thấy nút ⋮ ở dòng ${label}`);
     }
     clickButton(btnMore);
 
-    const menuItem = await waitForElement(() => findVisible('tp-yt-paper-item[test-id="delete_dubbed_audio"]'), 3000);
+    const testId = kind === 'audio' ? 'delete_dubbed_audio' : 'delete_descriptive_audio';
+    const menuItem = await waitForElement(() => findVisible(`tp-yt-paper-item[test-id="${testId}"]`), 3000);
     if (!menuItem) {
         await closeMenu(btnMore);
         await closeOpenDialogs();
-        throw new Error('Menu ⋮ của dòng Audio không có mục Delete');
+        throw new Error(`Menu ⋮ của dòng ${label} không có mục Delete`);
     }
     menuItem.click();
-    console.log('Clicked Delete');
+    console.log(`Clicked Delete (${label})`);
 
     // Nếu YouTube hỏi xác nhận xoá thì bấm đồng ý
-    const audioGone = () => !findVisible('#language-details-source-label-audio')
-        || !!findVisible('#language-details-text-button-audio');
+    const trackGone = kind === 'audio'
+        ? () => !findVisible('#language-details-source-label-audio') || !!findVisible('#language-details-text-button-audio')
+        : () => !findVisible('#language-details-source-label-descriptive-audio');
     const deleteConfirm = () => [...document.querySelectorAll('ytcp-confirmation-dialog #confirm-button')]
         .find(el => isVisible(el) && !el.closest('#ytgn-save-changes-confirmation-dialog'));
-    await waitFor(() => audioGone() || deleteConfirm(), 5000);
+    await waitFor(() => trackGone() || deleteConfirm(), 5000);
     if (deleteConfirm()) {
         clickButton(deleteConfirm());
         console.log('Đã xác nhận xoá');
     }
 
-    const gone = await waitFor(audioGone, TIMEOUT);
+    const gone = await waitFor(trackGone, TIMEOUT);
     if (!gone) {
-        throw new Error('Âm thanh chưa bị xoá khỏi hộp ngôn ngữ');
+        throw new Error(`${label} chưa bị xoá khỏi hộp ngôn ngữ`);
     }
     await sleep(SETTLE);
+}
 
-    // Có thay đổi chưa lưu thì bấm Cập nhật, không thì đóng hộp ngôn ngữ
+// Có thay đổi chưa lưu thì bấm Cập nhật, không thì đóng hộp ngôn ngữ
+async function saveLanguageDialog() {
     const btnUpdate = findVisible('ytcp-button.ytgn-language-dialog-update');
     if (btnUpdate && !btnUpdate.hasAttribute('disabled')) {
         await clickUpdate();
     } else {
         await closeOpenDialogs();
     }
-
-    showNotification(`Đã xoá âm thanh lỗi`, langName);
 }
 
 // Xoá nhanh âm thanh lỗi ngay ở bảng Bản dịch: rê chuột vào ô Audio → nút ▾ → Delete → Confirm.

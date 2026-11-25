@@ -64,7 +64,7 @@ function updateBusyUI() {
     const btnRun = document.getElementById('btnRunAll');
     document.getElementById('btnSync').disabled = isBusy();
     // Nút xoá đang chạy thành nút Dừng, nút xoá còn lại bị khoá
-    ['btnDeleteErrors', 'btnDeleteErrorsQuick'].forEach(id => {
+    ['btnDeleteErrorsAuto', 'btnDeleteErrors', 'btnDeleteErrorsQuick'].forEach(id => {
         const btn = document.getElementById(id);
         const running = isDeleting && btn.dataset.running === '1';
         btn.disabled = running ? deleteStopRequested : isBusy();
@@ -72,7 +72,7 @@ function updateBusyUI() {
     });
     btnRun.disabled = (isAdding || isDeleting) && !isRunningAll;
     btnRun.classList.toggle('btn-stop', isRunningAll);
-    if (!isRunningAll) btnRun.textContent = '▶ Chạy tất cả';
+    if (!isRunningAll) btnRun.textContent = '▶ Chạy tất cả / Auto Fix';
 }
 
 function getDisplayName(lang) {
@@ -357,8 +357,9 @@ function setupEventListeners() {
     });
 
     // Xoá âm thanh lỗi
-    document.getElementById('btnDeleteErrors').addEventListener('click', () => isDeleting ? stopDeleting() : deleteErrorAudios(false));
-    document.getElementById('btnDeleteErrorsQuick').addEventListener('click', () => isDeleting ? stopDeleting() : deleteErrorAudios(true));
+    document.getElementById('btnDeleteErrorsAuto').addEventListener('click', () => isDeleting ? stopDeleting() : deleteErrorAudios('auto'));
+    document.getElementById('btnDeleteErrors').addEventListener('click', () => isDeleting ? stopDeleting() : deleteErrorAudios('dialog'));
+    document.getElementById('btnDeleteErrorsQuick').addEventListener('click', () => isDeleting ? stopDeleting() : deleteErrorAudios('quick'));
 
     // Chọn file âm thanh
     document.getElementById('btnPickAudio').addEventListener('click', () => {
@@ -425,8 +426,12 @@ function checkCurrentTab() {
     });
 }
 
+// Kết quả của addDubForLang khi vừa xoá âm thanh mô tả lỗi: chưa thêm gì, cần chạy lại ngôn ngữ này sau
+const RETRY_LATER = 'retry-later';
+
 // tabId: tab cố định khi Chạy tất cả; bỏ trống = tab đang mở
-// Trả về null nếu thành công, hoặc nội dung lỗi. Khi Chạy tất cả thì không alert (runAll báo gộp ở cuối).
+// Trả về null nếu thành công, RETRY_LATER nếu vừa xoá âm thanh mô tả lỗi (cần chạy lại sau), hoặc nội dung lỗi.
+// Khi Chạy tất cả thì không alert (runAll báo gộp ở cuối).
 async function addDubForLang(index, tabId = null) {
     const item = selectedLangs[index];
     const lang = LANGUAGES.find(l => l.code === item.code);
@@ -498,6 +503,20 @@ async function addDubForLang(index, tabId = null) {
             throw new Error(response ? response.error : 'Không nhận được phản hồi từ trang');
         }
 
+        // Vừa xoá âm thanh mô tả lỗi, chưa thêm gì → trả lại trạng thái cũ, chạy lại sau
+        if (response.descState === 'deleted') {
+            Object.assign(item, prev.ytStatus ? prev : { status: 'pending' });
+            if (item.descVideoId === videoId) item.descVideoId = null;
+            if (!isRunningAll) alert(`Đã xoá âm thanh mô tả bị lỗi của ${lang.nameVn || lang.name}. Bấm Thêm lại để thêm âm thanh.`);
+            isAdding = false;
+            addingItem = null;
+            progressText = '';
+            updateBusyUI();
+            saveSelectedLangs();
+            renderLangList();
+            return RETRY_LATER;
+        }
+
         if (response.descState === 'present' || response.descState === 'added') {
             item.descVideoId = videoId;
         }
@@ -550,6 +569,7 @@ async function addDubForLang(index, tabId = null) {
 function stopRun(reason) {
     if (!isRunningAll || stopReason) return;
     stopReason = reason;
+    if (deleteTabId) deleteStopRequested = true; // Đang ở bước Auto Fix (xoá nhanh) thì cũng dừng
     chrome.tabs.sendMessage(runTabId, { action: 'abort', reason: reason }, () => {
         void chrome.runtime.lastError; // Tab có thể đã rời trang - bỏ qua
     });
@@ -563,16 +583,8 @@ async function runAll() {
         alert('Chọn file âm thanh trước khi chạy tất cả!');
         return;
     }
-
-    // Chưa chọn file gốc → chỉ chạy ngôn ngữ đã có âm thanh gốc (để thêm âm thanh mô tả), ngôn ngữ còn lại giữ Chờ
-    const pending = selectedLangs.filter(needsWork);
-    const queue = audioFile ? pending : pending.filter(hasMainAudio);
-    const noMain = pending.filter(l => !queue.includes(l));
-    const noMainText = noMain.length
-        ? `\n\n⚠️ ${DESC_NEEDS_MAIN_MSG} Chưa chọn file âm thanh gốc nên đã bỏ qua ${noMain.length} ngôn ngữ chưa có âm thanh gốc (vẫn ở trạng thái Chờ):\n${noMain.map(l => `• ${l.code}`).join('\n')}`
-        : '';
-    if (queue.length === 0) {
-        alert(`Không còn ngôn ngữ nào cần chạy!${noMainText}`);
+    if (selectedLangs.length === 0) {
+        alert('Không còn ngôn ngữ nào cần chạy!');
         return;
     }
 
@@ -594,7 +606,24 @@ async function runAll() {
     notice.hidden = false;
     updateBusyUI();
 
+    // BƯỚC AUTO FIX: xoá âm thanh lỗi của các ngôn ngữ trong danh sách (đủ file để thêm lại) trước khi thêm
+    let fixText = '';
+    try {
+        fixText = await autoFixBeforeRun(tab, btn);
+    } catch (e) {
+        if (!stopReason) stopReason = `Lỗi ở bước Auto Fix: ${e.message}`;
+    }
+
+    // Chưa chọn file gốc → chỉ chạy ngôn ngữ đã có âm thanh gốc (để thêm âm thanh mô tả), ngôn ngữ còn lại giữ Chờ
+    const pending = selectedLangs.filter(needsWork);
+    const queue = stopReason ? [] : (audioFile ? pending : pending.filter(hasMainAudio));
+    const noMain = stopReason ? [] : pending.filter(l => !queue.includes(l));
+    const noMainText = noMain.length
+        ? `\n\n⚠️ ${DESC_NEEDS_MAIN_MSG} Chưa chọn file âm thanh gốc nên đã bỏ qua ${noMain.length} ngôn ngữ chưa có âm thanh gốc (vẫn ở trạng thái Chờ):\n${noMain.map(l => `• ${l.code}`).join('\n')}`
+        : '';
+
     const failed = []; // Ngôn ngữ bị lỗi đã bỏ qua
+    const retryLater = []; // Ngôn ngữ vừa xoá âm thanh mô tả lỗi → chạy hết danh sách rồi quay lại thêm
     for (let i = 0; i < queue.length; i++) {
         if (stopReason) break;
         const index = selectedLangs.indexOf(queue[i]);
@@ -603,9 +632,25 @@ async function runAll() {
         btn.textContent = `⏹ Dừng (đang chạy ${i + 1}/${queue.length})`;
         const error = await addDubForLang(index, runTabId);
         if (stopReason) break;
-        if (error) failed.push(`• ${queue[i].code}: ${error}`);
+        if (error === RETRY_LATER) retryLater.push(queue[i]);
+        else if (error) failed.push(`• ${queue[i].code}: ${error}`);
 
         // Chờ hộp thoại đóng hẳn trước khi sang ngôn ngữ tiếp theo
+        await new Promise(resolve => setTimeout(resolve, 3000));
+    }
+
+    // Quay lại thêm các ngôn ngữ vừa xoá âm thanh mô tả lỗi
+    for (let i = 0; i < retryLater.length; i++) {
+        if (stopReason) break;
+        const index = selectedLangs.indexOf(retryLater[i]);
+        if (index === -1) continue;
+
+        btn.textContent = `⏹ Dừng (thêm lại ${i + 1}/${retryLater.length})`;
+        const error = await addDubForLang(index, runTabId);
+        if (stopReason) break;
+        if (error === RETRY_LATER) failed.push(`• ${retryLater[i].code}: Âm thanh mô tả vẫn bị lỗi sau khi xoá và thêm lại`);
+        else if (error) failed.push(`• ${retryLater[i].code}: ${error}`);
+
         await new Promise(resolve => setTimeout(resolve, 3000));
     }
 
@@ -622,18 +667,176 @@ async function runAll() {
         ? `\n\n⚠️ ${failed.length} ngôn ngữ bị lỗi đã bỏ qua (vẫn ở trạng thái Chờ):\n${failed.join('\n')}`
         : '';
     if (reason) {
-        alert(`⛔ Đã dừng Chạy tất cả: ${reason}.\nCác ngôn ngữ chưa chạy vẫn ở trạng thái Chờ, bấm Chạy tất cả để chạy tiếp.${failedText}`);
+        alert(`⛔ Đã dừng Chạy tất cả: ${reason}.\nCác ngôn ngữ chưa chạy vẫn ở trạng thái Chờ, bấm Chạy tất cả để chạy tiếp.${fixText}${failedText}`);
+    } else if (queue.length === 0 && !fixText) {
+        alert(`Không còn ngôn ngữ nào cần chạy!${noMainText}`);
     } else if (failed.length) {
-        alert(`Chạy tất cả đã xong.${failedText}\n\nBấm Chạy tất cả để thử lại các ngôn ngữ này.${noMainText}`);
-    } else if (noMain.length) {
-        alert(`Chạy tất cả đã xong.${noMainText}`);
+        alert(`Chạy tất cả đã xong.${fixText}${failedText}\n\nBấm Chạy tất cả để thử lại các ngôn ngữ này.${noMainText}`);
+    } else if (noMain.length || fixText) {
+        alert(`Chạy tất cả đã xong.${fixText}${noMainText}`);
     }
+}
+
+// Tìm dòng trên bảng Bản dịch của 1 ngôn ngữ trong danh sách (theo mã, không có mã thì theo tên)
+function findRowOfItem(rows, item) {
+    const lang = LANGUAGES.find(l => l.code === item.code);
+    return rows.find(r => r.code === item.code)
+        || (lang && rows.find(r => !r.code && (r.name === lang.name || r.name === lang.nameVn)));
+}
+
+async function readRowsOfTab(tabId) {
+    const [injection] = await chrome.scripting.executeScript({
+        target: { tabId: tabId },
+        world: 'MAIN',
+        func: readTranslationRows,
+        args: [null, false]
+    });
+    return injection.result || [];
+}
+
+// Auto Fix trước khi Chạy tất cả. Chỉ xét ngôn ngữ có trong danh sách và có dòng trên bảng;
+// chỉ xoá khi đã chọn đủ file để thêm lại phần bị xoá:
+// - Chính lỗi, mô tả lỗi / không có → xoá âm thanh chính qua hộp (mô tả xoá theo). Cần file gốc (+ file mô tả nếu đang có mô tả)
+// - Chính còn / không có, mô tả lỗi → xoá âm thanh mô tả qua hộp. Cần file mô tả (+ file gốc nếu chưa có âm thanh chính)
+// - Chính lỗi, mô tả còn → xoá nhanh ở bảng (giữ mô tả). Cần file gốc
+// Thứ tự: xoá qua hộp hết → tải lại trang → xoá nhanh → tải lại trang, cập nhật trạng thái danh sách.
+// Ngôn ngữ lỗi trên bảng nhưng không có trong danh sách: không đụng tới, chỉ báo.
+// Trả về đoạn báo cáo để gộp vào thông báo cuối ('' nếu không có gì để báo).
+async function autoFixBeforeRun(tab, btn) {
+    const videoId = runVideoId;
+    try {
+        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
+    } catch (e) {
+        console.log('Script injection:', e.message);
+    }
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    let rows = await readRowsOfTab(tab.id);
+
+    // Ngôn ngữ lỗi trên bảng nhưng chưa có trong danh sách
+    const extraErrors = rows.filter(r => r.status === 'error' && r.name && !selectedLangs.some(item => findRowOfItem([r], item)));
+
+    // Ngôn ngữ cần mở hộp để kiểm tra: âm thanh chính lỗi; hoặc mọi dòng nếu có file mô tả (âm thanh mô tả lỗi không hiện trên bảng)
+    const checks = [];
+    selectedLangs.forEach(item => {
+        const row = findRowOfItem(rows, item);
+        if (row && (row.status === 'error' || descAudioFile)) checks.push({ item, row });
+    });
+
+    const plan = { main: [], desc: [], quick: [], noFile: [] };
+    const inspectFailed = [];
+    for (let i = 0; i < checks.length; i++) {
+        if (stopReason) return '';
+        btn.textContent = `⏹ Dừng (Auto Fix: kiểm tra ${i + 1}/${checks.length})`;
+        const { item, row } = checks[i];
+        let response;
+        try {
+            response = await sendToTab(tab.id, { action: 'inspect_lang_audio', langName: row.label || row.name });
+        } catch (e) {
+            response = { success: false, error: e.message };
+        }
+        if (stopReason) return '';
+        if (!response || !response.success) {
+            inspectFailed.push(`• ${row.name}: ${response ? response.error : 'Không nhận được phản hồi từ trang'}`);
+            continue;
+        }
+        const { main, desc } = response;
+        const entry = { item, row, name: row.name };
+        if (main === 'error' && desc === 'ok') {
+            (audioFile ? plan.quick : plan.noFile).push({ ...entry, need: 'file âm thanh gốc' });
+        } else if (main === 'error') {
+            const ok = audioFile && (desc === 'none' || descAudioFile);
+            (ok ? plan.main : plan.noFile).push({ ...entry, need: desc === 'none' ? 'file âm thanh gốc' : 'file âm thanh gốc + mô tả' });
+        } else if (desc === 'error') {
+            const ok = descAudioFile && (main === 'ok' || audioFile);
+            (ok ? plan.desc : plan.noFile).push({ ...entry, need: main === 'ok' ? 'file âm thanh mô tả' : 'file âm thanh gốc + mô tả' });
+        }
+    }
+
+    const toDelete = plan.main.length + plan.desc.length + plan.quick.length;
+    const list = (arr, fn) => arr.map(e => `• ${e.name}${fn ? fn(e) : ''}`).join('\n');
+    let report = '';
+    if (inspectFailed.length) report += `\n\nKhông kiểm tra được (bỏ qua bước xoá):\n${inspectFailed.join('\n')}`;
+    if (plan.noFile.length) report += `\n\nKhông xoá vì thiếu file để thêm lại:\n${list(plan.noFile, e => ` (cần ${e.need})`)}`;
+    if (extraErrors.length) report += `\n\nLỗi trên video nhưng chưa có trong danh sách (không đụng tới, thêm vào danh sách rồi chạy lại nếu cần):\n${list(extraErrors)}`;
+
+    if (toDelete === 0) return report;
+
+    const planText = [
+        plan.main.length ? `Xoá âm thanh chính qua hộp ngôn ngữ (mô tả xoá theo):\n${list(plan.main)}` : '',
+        plan.desc.length ? `Xoá âm thanh mô tả qua hộp ngôn ngữ:\n${list(plan.desc)}` : '',
+        plan.quick.length ? `Xoá nhanh âm thanh chính (giữ âm thanh mô tả):\n${list(plan.quick)}` : ''
+    ].filter(Boolean).join('\n\n');
+    if (!confirm(`Auto Fix: ${toDelete} ngôn ngữ có âm thanh lỗi, xoá rồi thêm lại file mới?\n\n${planText}${report}\n\nOK = xoá rồi chạy tất cả. Huỷ = không xoá, chỉ chạy thêm như cũ.`)) {
+        return report;
+    }
+
+    // Dùng lại cơ chế xoá nhanh (theo dõi Dừng / tab rời video)
+    deleteTabId = tab.id;
+    deleteVideoId = videoId;
+    deleteStopRequested = !!stopReason;
+    deleteAbortReason = null;
+    const failed = [];
+    let mainDone = 0, descDone = 0, quickFailed = [], quickRan = false;
+    try {
+        const dialogJobs = [...plan.main.map(e => ({ ...e, kind: 'audio' })), ...plan.desc.map(e => ({ ...e, kind: 'descriptive-audio' }))];
+        for (let i = 0; i < dialogJobs.length; i++) {
+            if (stopReason) break;
+            btn.textContent = `⏹ Dừng (Auto Fix: xoá qua hộp ${i + 1}/${dialogJobs.length})`;
+            const job = dialogJobs[i];
+            try {
+                const response = await sendToTab(tab.id, { action: 'delete_track_dialog', langName: job.row.label || job.row.name, kind: job.kind });
+                if (!response || !response.success) {
+                    throw new Error(response ? response.error : 'Không nhận được phản hồi từ trang');
+                }
+                // Âm thanh mô tả đã mất (xoá trực tiếp hoặc xoá theo âm thanh chính) → cần thêm lại
+                if (job.item.descVideoId === videoId) job.item.descVideoId = null;
+                if (job.kind === 'audio') mainDone++; else descDone++;
+            } catch (e) {
+                if (stopReason) break;
+                failed.push(`• ${job.name}: ${e.message}`);
+            }
+            await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+
+        if (plan.quick.length && !stopReason) {
+            btn.textContent = '⏹ Dừng (Auto Fix: tải lại trang...)';
+            await reloadTranslationsTab(tab.id, videoId);
+            quickRan = true;
+            quickFailed = await quickDeletePasses(tab, plan.quick.map(e => ({ name: e.name, label: e.row.label })), btn);
+        }
+    } finally {
+        if (deleteAbortReason && !stopReason) stopReason = deleteAbortReason;
+        deleteTabId = null;
+        deleteVideoId = null;
+        deleteStopRequested = false;
+        deleteAbortReason = null;
+    }
+
+    // Tải lại trang để bảng hiện đúng, rồi cập nhật trạng thái danh sách trước khi thêm
+    if (!stopReason) {
+        btn.textContent = '⏹ Dừng (Auto Fix: tải lại trang...)';
+        await reloadTranslationsTab(tab.id, videoId);
+        rows = await readRowsOfTab(tab.id);
+        selectedLangs.forEach(item => applyRowToItem(item, findRowOfItem(rows, item)));
+        saveSelectedLangs();
+        renderLangList();
+    }
+
+    const quickDone = quickRan ? plan.quick.length - quickFailed.length : 0;
+    const allFailed = [...failed, ...quickFailed];
+    return `\n\nAuto Fix: đã xoá qua hộp ngôn ngữ ${mainDone + descDone} (âm thanh chính ${mainDone}, âm thanh mô tả ${descDone}), xoá nhanh ${quickDone}/${plan.quick.length}.`
+        + (allFailed.length ? `\n⚠️ Xoá không được:\n${allFailed.join('\n')}` : '')
+        + report;
 }
 
 // Xoá âm thanh lỗi (Removed / Processing failed) của mọi ngôn ngữ trên video đang mở.
 // Đọc bảng Bản dịch, hỏi xác nhận, rồi xoá lần lượt; chỉ xoá âm thanh, giữ ngôn ngữ và phụ đề.
-// quick: xoá ngay ở bảng (nút ▾ của ô Audio) thay vì mở hộp ngôn ngữ
-async function deleteErrorAudios(quick) {
+// mode: 'dialog' = xoá qua hộp ngôn ngữ, 'quick' = xoá ngay ở bảng (nút ▾ của ô Audio),
+// 'auto' = tự chọn theo từng ngôn ngữ (xem autoDeletePasses)
+async function deleteErrorAudios(mode) {
+    const quick = mode === 'quick';
+    const auto = mode === 'auto';
     if (isBusy()) return;
 
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -656,16 +859,23 @@ async function deleteErrorAudios(quick) {
         return;
     }
 
-    const errors = rows.filter(r => r.status === 'error' && r.name);
+    // Tự động: âm thanh mô tả không hiện trên bảng (kể cả dòng chưa có âm thanh chính "–") → phải mở hộp của mọi ngôn ngữ để kiểm tra
+    const errors = auto
+        ? rows.filter(r => r.name)
+        : rows.filter(r => r.status === 'error' && r.name);
     if (errors.length === 0) {
-        alert('Video không có âm thanh lỗi nào.');
+        alert(auto ? 'Video chưa có ngôn ngữ nào.' : 'Video không có âm thanh lỗi nào.');
         return;
     }
-    if (!confirm(`Xoá âm thanh lỗi của ${errors.length} ngôn ngữ? (Giữ nguyên ngôn ngữ và phụ đề)\n\n${errors.map(r => `• ${r.name}: ${r.text}`).join('\n')}`)) {
+    const mainErrors = errors.filter(r => r.status === 'error');
+    const confirmMsg = auto
+        ? `Kiểm tra ${errors.length} ngôn ngữ và xoá âm thanh lỗi (chính / mô tả)? (Giữ nguyên ngôn ngữ và phụ đề)\n\nÂm thanh chính đang lỗi:\n${mainErrors.length ? mainErrors.map(r => `• ${r.name}: ${r.text}`).join('\n') : '(không có)'}`
+        : `Xoá âm thanh lỗi của ${errors.length} ngôn ngữ? (Giữ nguyên ngôn ngữ và phụ đề)\n\n${errors.map(r => `• ${r.name}: ${r.text}`).join('\n')}`;
+    if (!confirm(confirmMsg)) {
         return;
     }
 
-    const btn = document.getElementById(quick ? 'btnDeleteErrorsQuick' : 'btnDeleteErrors');
+    const btn = document.getElementById({ auto: 'btnDeleteErrorsAuto', quick: 'btnDeleteErrorsQuick', dialog: 'btnDeleteErrors' }[mode]);
     const btnLabel = btn.textContent;
     btn.dataset.running = '1';
     deleteStopRequested = false;
@@ -679,6 +889,7 @@ async function deleteErrorAudios(quick) {
     let notRun = []; // Ngôn ngữ chưa xoá vì đã bấm Dừng
     let stopped = false;
     let abortReason = null;
+    let autoResult = null;
     try {
         try {
             await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
@@ -687,7 +898,11 @@ async function deleteErrorAudios(quick) {
         }
         await new Promise(resolve => setTimeout(resolve, 500));
 
-        if (quick) {
+        if (auto) {
+            autoResult = await autoDeletePasses(tab, errors, btn);
+            failed = autoResult.failed;
+            notRun = autoResult.notRun;
+        } else if (quick) {
             failed = await quickDeletePasses(tab, errors, btn);
         } else {
             for (let i = 0; i < errors.length; i++) {
@@ -729,8 +944,17 @@ async function deleteErrorAudios(quick) {
         return;
     }
 
-    const done = errors.length - failed.length - notRun.length;
     const stoppedText = stopped ? '⛔ Đã dừng. ' : '';
+    if (auto) {
+        const r = autoResult;
+        const notRunText = notRun.length ? `\n\nChưa kiểm tra / chưa xoá:\n${notRun.map(x => `• ${x.name}`).join('\n')}` : '';
+        const summary = `Xoá qua hộp ngôn ngữ: ${r.dialogDone} (âm thanh chính ${r.mainDone}, âm thanh mô tả ${r.descDone})\nXoá nhanh: ${r.quickDone}/${r.quickCount}`;
+        alert(failed.length || notRun.length || stopped
+            ? `${stoppedText}${summary}${failed.length ? `\n\n⚠️ Còn lỗi:\n${failed.join('\n')}` : ''}${notRunText}`
+            : (r.dialogDone + r.quickDone ? `✅ ${summary}` : '✅ Không có âm thanh lỗi nào.'));
+        return;
+    }
+    const done = errors.length - failed.length - notRun.length;
     const notRunText = notRun.length ? `\n\nChưa xoá:\n${notRun.map(r => `• ${r.name}`).join('\n')}` : '';
     alert(failed.length || notRun.length || stopped
         ? `${stoppedText}Đã xoá âm thanh lỗi của ${done}/${errors.length} ngôn ngữ.${failed.length ? `\n\n⚠️ Còn lỗi:\n${failed.join('\n')}` : ''}${notRunText}`
@@ -770,6 +994,68 @@ function stopDeleting() {
 
 function setDeleteProgress(btn, text) {
     if (!deleteStopRequested) btn.textContent = `⏹ Dừng (${text})`;
+}
+
+// Tự động: mở hộp từng ngôn ngữ, xoá ngay trong hộp những ngôn ngữ cần xoá qua hộp
+// (chính lỗi + mô tả lỗi/không có → xoá chính; chính tốt + mô tả lỗi → xoá mô tả).
+// Ngôn ngữ chính lỗi nhưng mô tả còn tốt → để dành, xoá hộp xong hết mới xoá nhanh ở bảng (giữ âm thanh mô tả).
+async function autoDeletePasses(tab, langs, btn) {
+    const videoId = tab.url.match(/\/video\/([a-zA-Z0-9_-]+)/)[1];
+    const failed = [];
+    let notRun = [];
+    const quickList = [];
+    let mainDone = 0, descDone = 0;
+
+    for (let i = 0; i < langs.length; i++) {
+        if (deleteStopRequested || !await isTabOnVideo(tab.id, videoId)) {
+            notRun = langs.slice(i);
+            break;
+        }
+        setDeleteProgress(btn, `hộp ngôn ngữ ${i + 1}/${langs.length}`);
+        try {
+            const response = await sendToTab(tab.id, { action: 'delete_error_audio_auto', langName: langs[i].label || langs[i].name });
+            if (!response || !response.success) {
+                throw new Error(response ? response.error : 'Không nhận được phản hồi từ trang');
+            }
+            if (response.result === 'quick') quickList.push(langs[i]);
+            else if (response.result === 'main') mainDone++;
+            else if (response.result === 'desc') descDone++;
+            if (response.result === 'main' || response.result === 'desc') {
+                await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+        } catch (e) {
+            failed.push(`• ${langs[i].name}: ${e.message}`);
+        }
+    }
+
+    let quickFailed = [];
+    if (quickList.length) {
+        if (deleteStopRequested || deleteAbortReason) {
+            notRun = [...notRun, ...quickList];
+        } else if (!await isTabOnVideo(tab.id, videoId)) {
+            notRun = [...notRun, ...quickList];
+        } else {
+            // Tải lại trang trước khi xoá nhanh để bảng hiện đúng sau các lần xoá qua hộp ngôn ngữ
+            try {
+                setDeleteProgress(btn, 'tải lại trang...');
+                await reloadTranslationsTab(tab.id, videoId);
+                quickFailed = await quickDeletePasses(tab, quickList, btn);
+            } catch (e) {
+                quickFailed = quickList.map(r => `• ${r.name}: ${e.message}`);
+            }
+        }
+    }
+
+    const quickDone = notRun.some(r => quickList.includes(r)) ? 0 : quickList.length - quickFailed.length;
+    return {
+        failed: [...failed, ...quickFailed],
+        notRun,
+        mainDone,
+        descDone,
+        dialogDone: mainDone + descDone,
+        quickCount: quickList.length,
+        quickDone
+    };
 }
 
 // Xoá nhanh theo lượt: mỗi lượt bấm xoá lần lượt các ngôn ngữ còn lỗi (không thấy nút thì bỏ qua),
