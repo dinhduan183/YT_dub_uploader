@@ -6,7 +6,7 @@ function sleep(ms) {
 // Message handler function
 function handleMessage(request, _sender, sendResponse) {
     if (request.action === "add_single_lang") {
-        addSingleLanguage(request.langCode, request.langName, request.langNameVn, request.audio, request.descAudio, request.rowLabel)
+        addSingleLanguage(request.langCode, request.langName, request.langNameVn, request.audio, request.descAudio, request.rowLabel, request.skipDescError)
             .then((result) => sendResponse({ success: true, ...(result || {}) }))
             .catch((error) => {
                 console.error(error);
@@ -19,6 +19,17 @@ function handleMessage(request, _sender, sendResponse) {
     if (request.action === "inspect_lang_audio" || request.action === "delete_track_dialog") {
         (request.action === "inspect_lang_audio" ? inspectLanguageAudio(request.langName) : deleteTrackOfLanguage(request.langName, request.kind))
             .then((result) => sendResponse({ success: true, ...(result || {}) }))
+            .catch((error) => {
+                console.error(error);
+                sendResponse({ success: false, error: error.message });
+            });
+        return true;
+    }
+
+    // Auto Fix: mở hộp 1 lần, xoá luôn theo trạng thái và file đang có
+    if (request.action === "auto_fix_lang") {
+        autoFixLanguage(request.langName, request.hasAudio, request.hasDesc)
+            .then((result) => sendResponse({ success: true, ...result }))
             .catch((error) => {
                 console.error(error);
                 sendResponse({ success: false, error: error.message });
@@ -168,7 +179,7 @@ if (!window.manualDubBridgeToken || !document.getElementById('ytdub-bridge')) {
 // onVideo: ngôn ngữ đã có trên video từ trước (mở hộp ngôn ngữ từ bảng Bản dịch)
 // descState: 'present' (đã có) / 'added' (vừa thêm) / 'blocked' (menu ⋮ không có Add descriptive audio) / 'skipped' (không làm)
 //            / 'deleted' (âm thanh mô tả cũ bị lỗi → đã xoá và đóng hộp, side panel thêm lại sau)
-async function addSingleLanguage(code, name, nameVn, audio, descAudio, rowLabel) {
+async function addSingleLanguage(code, name, nameVn, audio, descAudio, rowLabel, skipDescError) {
     console.log(`Adding language: ${code} - ${nameVn}`);
     window.manualDubAbort = null;
 
@@ -257,6 +268,11 @@ async function addSingleLanguage(code, name, nameVn, audio, descAudio, rowLabel)
     // BƯỚC 3b: Âm thanh mô tả cũ bị lỗi (vd ngôn ngữ đã xoá nhanh âm thanh chính nên không còn trên bảng, nhưng vẫn còn âm thanh mô tả)
     // → xoá rồi đóng hộp; thêm ngay thì hộp vừa xoá có thể chưa hiện nút Add, side panel sẽ quay lại thêm sau
     if (findVisible('#language-details-source-label-descriptive-audio') && isDialogTrackError('descriptive-audio')) {
+        // Chạy tất cả: không xoá, đóng hộp và bỏ qua ngôn ngữ này
+        if (skipDescError) {
+            await closeOpenDialogs();
+            throw new Error('Âm thanh mô tả bị lỗi, đã bỏ qua (bấm Auto Fix để xoá rồi thêm lại)');
+        }
         reportProgress('Đang xoá âm thanh mô tả lỗi…');
         await deleteTrackInDialog('descriptive-audio');
         await saveLanguageDialog();
@@ -359,6 +375,39 @@ async function deleteErrorAudioAuto(langName) {
         await closeOpenDialogs();
     }
     return result;
+}
+
+// Auto Fix (Chạy tất cả): mở hộp 1 lần, đọc trạng thái rồi xoá luôn nếu có file để thêm lại.
+// hasAudio / hasDesc: side panel đã chọn file âm thanh gốc / mô tả chưa.
+// action: 'main' / 'desc' (đã xoá trong hộp), 'quick' (cần xoá nhanh ở bảng), 'nofile' (thiếu file, không xoá), 'none'
+async function autoFixLanguage(langName, hasAudio, hasDesc) {
+    window.manualDubAbort = null;
+    await openLanguageDialog(langName);
+    const main = findVisible('#language-details-text-button-audio') ? 'none'
+        : isDialogTrackError('audio') ? 'error' : 'ok';
+    const desc = !findVisible('#language-details-source-label-descriptive-audio') ? 'none'
+        : isDialogTrackError('descriptive-audio') ? 'error' : 'ok';
+
+    let action = 'none', need = '';
+    if (main === 'error' && desc === 'ok') {
+        action = hasAudio ? 'quick' : 'nofile';
+        need = 'file âm thanh gốc';
+    } else if (main === 'error') {
+        action = hasAudio && (desc === 'none' || hasDesc) ? 'main' : 'nofile';
+        need = desc === 'none' ? 'file âm thanh gốc' : 'file âm thanh gốc + mô tả';
+    } else if (desc === 'error') {
+        action = hasDesc && (main === 'ok' || hasAudio) ? 'desc' : 'nofile';
+        need = main === 'ok' ? 'file âm thanh mô tả' : 'file âm thanh gốc + mô tả';
+    }
+
+    if (action === 'main' || action === 'desc') {
+        await deleteTrackInDialog(action === 'main' ? 'audio' : 'descriptive-audio');
+        await saveLanguageDialog();
+        showNotification(action === 'main' ? 'Đã xoá âm thanh lỗi' : 'Đã xoá âm thanh mô tả lỗi', langName);
+    } else {
+        await closeOpenDialogs();
+    }
+    return { main, desc, action, need };
 }
 
 // Mở hộp ngôn ngữ, đọc trạng thái âm thanh chính / mô tả rồi đóng (không thay đổi gì).

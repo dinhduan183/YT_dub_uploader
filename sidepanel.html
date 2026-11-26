@@ -226,10 +226,11 @@
         }
         .btn-primary:hover { opacity: 0.88; }
         .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
-        #btnRunAll { background: var(--primary); color: #fff; margin-bottom: 8px; flex-shrink: 0; }
-        #btnRunAll:hover:not(:disabled) { background: var(--primary-hover); opacity: 1; }
+        .run-row { display: flex; gap: 8px; margin-bottom: 8px; flex-shrink: 0; }
+        #btnRunAll, #btnAutoFix { background: var(--primary); color: #fff; flex: 1; }
+        #btnRunAll:hover:not(:disabled), #btnAutoFix:hover:not(:disabled) { background: var(--primary-hover); opacity: 1; }
         .btn-primary.btn-stop { background: var(--surface-2); color: var(--err); border: 1px solid var(--err); }
-        #btnRunAll.btn-stop { background: var(--surface-2); color: var(--err); }
+        #btnRunAll.btn-stop, #btnAutoFix.btn-stop { background: var(--surface-2); color: var(--err); }
 
         .btn-add {
             background: var(--accent);
@@ -457,19 +458,16 @@
         <div class="header">
             <img class="header-icon" src="new_icon_48.png" alt="">
             <span class="header-title">YT Dub Uploader</span>
-            <span class="header-version">v6.0</span>
+            <span class="header-version">v7.0</span>
         </div>
 
         <div id="whatsNew" class="whats-new" hidden>
             <div class="whats-new-body">
-                <div class="whats-new-title">🎉 Có gì mới ở v6.0</div>
-                <div>Nút ▶ Chạy tất cả / Auto Fix: trước khi thêm, tự kiểm tra và xoá âm thanh lỗi của các ngôn ngữ trong danh sách (hỏi trước khi xoá, chỉ xoá khi đã chọn đủ file để thêm lại), rồi thêm bù file mới.</div>
-                <div>Nút 🤖 Tự động ở mục Âm thanh lỗi: tự chọn cách xoá cho từng ngôn ngữ.</div>
-                <div>• Âm thanh chính lỗi, mô tả lỗi / không có → xoá âm thanh chính qua hộp ngôn ngữ (mô tả xoá theo).</div>
-                <div>• Âm thanh chính còn / không có, mô tả lỗi → chỉ xoá âm thanh mô tả qua hộp ngôn ngữ.</div>
-                <div>• Âm thanh chính lỗi, mô tả còn → xoá nhanh ở bảng (giữ âm thanh mô tả).</div>
-                <div>Xoá qua hộp ngôn ngữ trước, tải lại trang, rồi mới xoá nhanh.</div>
-                <div>Khi thêm ngôn ngữ mà âm thanh mô tả cũ bị lỗi: tự xoá, bỏ qua ngôn ngữ đó, chạy hết danh sách rồi quay lại thêm.</div>
+                <div class="whats-new-title">🎉 Có gì mới ở v7.0</div>
+                <div>Tách 2 nút ▶ Chạy tất cả và 🛠 Auto Fix.</div>
+                <div>• ▶ Chạy tất cả: chỉ thêm cho ngôn ngữ chưa có âm thanh gốc / mô tả, ngôn ngữ có âm thanh lỗi thì bỏ qua và báo ở cuối.</div>
+                <div>• 🛠 Auto Fix: tự động xoá âm thanh lỗi rồi thêm file mới, không hỏi xác nhận, mỗi ngôn ngữ chỉ mở hộp 1 lần (chỉ xoá khi đã chọn đủ file để thêm lại).</div>
+                <div>Mục Âm thanh lỗi chỉ còn nút 🤖 Tự động (tạm ẩn 2 nút Xoá qua hộp ngôn ngữ / Xoá nhanh).</div>
             </div>
             <button class="whats-new-close" id="btnCloseWhatsNew" title="Đóng">✕</button>
         </div>
@@ -485,8 +483,9 @@
             </div>
             <div class="tool-row">
                 <button class="btn-tool" id="btnDeleteErrorsAuto" title="Tự chọn cách xoá cho từng ngôn ngữ: xoá qua hộp ngôn ngữ trước (chính + mô tả cùng lỗi → xoá chính; chỉ mô tả lỗi → xoá mô tả), rồi xoá nhanh những ngôn ngữ chỉ lỗi âm thanh chính (giữ âm thanh mô tả)">🤖 Tự động</button>
-                <button class="btn-tool" id="btnDeleteErrors" title="Xoá âm thanh lỗi (Removed / Processing failed) qua hộp ngôn ngữ">🗑 Xoá qua hộp ngôn ngữ</button>
-                <button class="btn-tool" id="btnDeleteErrorsQuick" title="Xoá nhanh âm thanh lỗi ngay ở bảng Bản dịch (không mở hộp ngôn ngữ)">⚡ Xoá nhanh</button>
+                <!-- Tạm ẩn 2 nút dưới: bỏ style="display:none" để dùng lại -->
+                <button class="btn-tool" id="btnDeleteErrors" style="display:none" title="Xoá âm thanh lỗi (Removed / Processing failed) qua hộp ngôn ngữ">🗑 Xoá qua hộp ngôn ngữ</button>
+                <button class="btn-tool" id="btnDeleteErrorsQuick" style="display:none" title="Xoá nhanh âm thanh lỗi ngay ở bảng Bản dịch (không mở hộp ngôn ngữ)">⚡ Xoá nhanh</button>
             </div>
         </div>
 
@@ -541,7 +540,10 @@
                     </button>
                 </div>
             </div>
-            <button class="btn btn-primary" id="btnRunAll" title="Xoá âm thanh lỗi của các ngôn ngữ trong danh sách (hỏi trước khi xoá), rồi thêm file cho mọi ngôn ngữ còn thiếu">▶ Chạy tất cả / Auto Fix</button>
+            <div class="run-row">
+                <button class="btn btn-primary" id="btnRunAll" title="Thêm file cho ngôn ngữ chưa có âm thanh gốc / mô tả; ngôn ngữ có âm thanh lỗi thì bỏ qua">▶ Chạy tất cả</button>
+                <button class="btn btn-primary" id="btnAutoFix" title="Xoá âm thanh lỗi của các ngôn ngữ trong danh sách, rồi thêm file mới">🛠 Auto Fix</button>
+            </div>
             <div id="runNotice" class="run-notice" hidden>⚠️ Giữ nguyên tab YouTube Studio này trong lúc chạy. Chuyển sang tab khác sẽ dừng.</div>
             <div id="langList" class="lang-list">
                 <div class="empty-state">
