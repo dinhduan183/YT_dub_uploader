@@ -398,6 +398,40 @@
         .status-processing { background: var(--warn-bg); color: var(--warn); animation: pulse 1.5s infinite; }
         .status-done { background: var(--ok-bg); color: var(--ok); }
         .status-error { background: var(--err-bg); color: var(--err); }
+        .status-unknown { background: transparent; color: var(--text-3); box-shadow: inset 0 0 0 1px var(--border); font-weight: 500; }
+
+        /* Cột trạng thái Gốc / Mô tả: cố định bề rộng cho thẳng hàng, nhãn co lại và cắt chữ nếu dài */
+        .lang-col {
+            width: 84px;
+            flex-shrink: 0;
+            display: flex;
+            justify-content: center;
+            min-width: 0;
+        }
+        .lang-col-desc { width: 62px; }
+        .lang-col .lang-status {
+            max-width: 100%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .lang-head {
+            padding-top: 0;
+            padding-bottom: 0;
+            position: sticky;
+            top: 0;
+            z-index: 1;
+            background: var(--surface);
+        }
+        .lang-head .lang-col {
+            font-size: 10px;
+            font-weight: 600;
+            color: var(--text-3);
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            padding: 2px 0;
+        }
+        .lang-head .lang-actions { visibility: hidden; height: 0; overflow: hidden; }
 
         @keyframes pulse {
             0%, 100% { opacity: 1; }
@@ -463,11 +497,9 @@
 
         <div id="whatsNew" class="whats-new" hidden>
             <div class="whats-new-body">
-                <div class="whats-new-title">🎉 Có gì mới ở v7.0</div>
-                <div>Tách 2 nút ▶ Chạy tất cả và 🛠 Auto Fix.</div>
-                <div>• ▶ Chạy tất cả: chỉ thêm cho ngôn ngữ chưa có âm thanh gốc / mô tả, ngôn ngữ có âm thanh lỗi thì bỏ qua và báo ở cuối.</div>
-                <div>• 🛠 Auto Fix: tự động xoá âm thanh lỗi rồi thêm file mới, không hỏi xác nhận, mỗi ngôn ngữ chỉ mở hộp 1 lần (chỉ xoá khi đã chọn đủ file để thêm lại).</div>
-                <div>Mục Âm thanh lỗi chỉ còn nút 🤖 Tự động (tạm ẩn 2 nút Xoá qua hộp ngôn ngữ / Xoá nhanh).</div>
+                <div class="whats-new-title">🎉 Có gì mới ở v7.1</div>
+                <div>• Cập nhật sửa lỗi, tối ưu cho nút Xoá tự động.</div>
+                <div>• Cập nhật thuật toán cho nút Auto Fix.</div>
             </div>
             <button class="whats-new-close" id="btnCloseWhatsNew" title="Đóng">✕</button>
         </div>

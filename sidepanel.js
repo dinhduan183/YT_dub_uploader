@@ -157,6 +157,28 @@ function hasMainAudio(item) {
 
 const DESC_NEEDS_MAIN_MSG = 'Âm thanh mô tả chỉ thêm được sau khi ngôn ngữ đã có âm thanh gốc.';
 
+// Trạng thái âm thanh mô tả đọc được khi mở hộp ngôn ngữ (không hiện trên bảng Bản dịch): 'ok' / 'error' / 'none'
+// Ghi theo video; descVideoId (đã có mô tả tốt) giữ khớp để needsWork dùng như cũ
+function setDescState(item, videoId, state) {
+    item.descState = state;
+    item.descStateVideoId = videoId;
+    if (state === 'ok') item.descVideoId = videoId;
+    else if (item.descVideoId === videoId) item.descVideoId = null;
+}
+
+// null = chưa mở hộp ngôn ngữ này nên chưa biết
+function getDescState(item) {
+    const videoId = currentVideoId();
+    if (item.descStateVideoId === videoId && item.descState) return item.descState;
+    return item.descVideoId && item.descVideoId === videoId ? 'ok' : null;
+}
+
+const DESC_BADGES = {
+    ok: { text: 'Đã có', cls: 'status-done' },
+    error: { text: 'Lỗi', cls: 'status-error' },
+    none: { text: 'Chưa có', cls: 'status-pending' }
+};
+
 function renderLangList() {
     const container = document.getElementById('langList');
 
@@ -169,25 +191,26 @@ function renderLangList() {
         : selectedLangs.map((item, index) => {
         const displayName = getLangName(item.code, item.name);
 
-        let statusClass = 'status-pending';
-        let statusText = 'Chờ';
-        if (item.status === 'processing') {
-            statusClass = 'status-processing';
-            statusText = 'Đang xử lý';
-        } else if (item.status === 'done') {
-            statusClass = 'status-done';
-            statusText = 'Hoàn thành';
-        }
-
-        // Trạng thái lấy từ YouTube Studio khi Reload
+        // Cột Gốc: Đã có (Published / Processing) / Lỗi / Chưa có ("–" trên bảng) / Unknown (chưa đọc bảng).
+        // Processing giữ màu vàng để còn phân biệt; chữ gốc của YouTube xem khi rê chuột.
+        let statusClass = 'status-unknown';
+        let statusText = 'Unknown';
+        let statusTitle = 'Chưa đọc được trạng thái từ YouTube Studio';
         if (item.ytStatus) {
             const badge = getYtBadge(item.ytStatus, item.ytText);
-            statusText = badge.text;
             statusClass = badge.cls;
+            statusText = { published: 'Đã có', processing: 'Đã có', error: 'Lỗi', none: 'Chưa có' }[item.ytStatus] || badge.text;
+            statusTitle = badge.text;
+        } else if (item.status === 'processing') {
+            statusClass = 'status-processing';
+            statusText = statusTitle = 'Đang xử lý'; // Đang thêm bằng extension
+        } else if (item.status === 'done') {
+            statusClass = 'status-done';
+            statusText = statusTitle = 'Đã có';
         }
 
         const disabled = !needsWork(item);
-        const hasDesc = item.descVideoId && item.descVideoId === currentVideoId();
+        const descBadge = DESC_BADGES[getDescState(item)] || { text: 'Unknown', cls: 'status-unknown' };
 
         return `
             <div class="lang-item">
@@ -198,8 +221,8 @@ function renderLangList() {
                         ${item === addingItem ? `<span class="lang-progress" id="langProgress">${progressText}</span>` : ''}
                     </div>
                 </div>
-                <span class="lang-status ${statusClass}">${statusText}</span>
-                ${hasDesc ? '<span class="lang-status status-done" title="Đã có âm thanh mô tả">Mô tả</span>' : ''}
+                <div class="lang-col"><span class="lang-status ${statusClass}" title="Âm thanh gốc: ${statusTitle}">${statusText}</span></div>
+                <div class="lang-col lang-col-desc"><span class="lang-status ${descBadge.cls}" title="Âm thanh mô tả: ${descBadge.text}">${descBadge.text}</span></div>
                 <div class="lang-actions">
                     <button class="btn btn-add" data-index="${index}" ${disabled ? 'disabled' : ''}>Thêm</button>
                     <button class="btn btn-remove" data-index="${index}" title="Xóa khỏi danh sách">✕</button>
@@ -236,7 +259,16 @@ function renderLangList() {
         `;
     }
 
-    container.innerHTML = itemsHtml + extrasHtml;
+    // Hàng tiêu đề cột Gốc / Mô tả; phần nút để ẩn cho thẳng cột với các dòng bên dưới
+    const headerHtml = selectedLangs.length === 0 ? '' : `
+        <div class="lang-item lang-head" aria-hidden="true">
+            <div class="lang-info"></div>
+            <div class="lang-col">Gốc</div>
+            <div class="lang-col lang-col-desc">Mô tả</div>
+            <div class="lang-actions"><span class="btn btn-add">Thêm</span><span class="btn btn-remove">✕</span></div>
+        </div>`;
+
+    container.innerHTML = headerHtml + itemsHtml + extrasHtml;
     document.getElementById('langCount').textContent = selectedLangs.length;
 
     // Gắn event listener cho các nút "Thêm"
@@ -519,7 +551,7 @@ async function addDubForLang(index, tabId = null) {
         // Vừa xoá âm thanh mô tả lỗi, chưa thêm gì → trả lại trạng thái cũ, chạy lại sau
         if (response.descState === 'deleted') {
             Object.assign(item, prev.ytStatus ? prev : { status: 'pending' });
-            if (item.descVideoId === videoId) item.descVideoId = null;
+            setDescState(item, videoId, 'none');
             if (!isRunningAll) alert(`Đã xoá âm thanh mô tả bị lỗi của ${lang.nameVn || lang.name}. Bấm Thêm lại để thêm âm thanh.`);
             isAdding = false;
             addingItem = null;
@@ -530,8 +562,11 @@ async function addDubForLang(index, tabId = null) {
             return RETRY_LATER;
         }
 
+        // Ghi nhận trạng thái âm thanh mô tả vừa thấy trong hộp ngôn ngữ
         if (response.descState === 'present' || response.descState === 'added') {
-            item.descVideoId = videoId;
+            setDescState(item, videoId, 'ok');
+        } else if (response.descState === 'skipped' && audioFile) {
+            setDescState(item, videoId, 'none'); // Hộp không có dòng âm thanh mô tả
         }
 
         if (response.onVideo && !response.mainAdded) {
@@ -564,6 +599,8 @@ async function addDubForLang(index, tabId = null) {
     } catch (e) {
         console.error('Error:', e);
         Object.assign(item, prev.ytStatus ? prev : { status: 'pending' });
+        // Chạy tất cả gặp âm thanh mô tả lỗi (content.js bỏ qua, không xoá) → đánh dấu Lỗi
+        if (/Âm thanh mô tả bị lỗi/.test(e.message)) setDescState(item, videoId, 'error');
         error = e.message;
         // Đang Chạy tất cả (bỏ qua lỗi / dừng do chuyển tab) thì runAll báo ở cuối, không alert ở đây
         if (!isRunningAll) alert('Lỗi: ' + e.message);
@@ -726,7 +763,8 @@ async function readRowsOfTab(tabId) {
 // - Chính lỗi, mô tả lỗi / không có → xoá âm thanh chính trong hộp (mô tả xoá theo). Cần file gốc (+ file mô tả nếu đang có mô tả)
 // - Chính còn / không có, mô tả lỗi → xoá âm thanh mô tả trong hộp. Cần file mô tả (+ file gốc nếu chưa có âm thanh chính)
 // - Chính lỗi, mô tả còn → để sau, xoá nhanh ở bảng (giữ mô tả). Cần file gốc
-// Thứ tự: xoá trong hộp hết → tải lại trang → xoá nhanh → tải lại trang, cập nhật trạng thái danh sách.
+// Thứ tự: xoá trong hộp hết → xoá nhanh (tự tải lại trang sau mỗi lượt) → đọc lại bảng, cập nhật trạng thái danh sách.
+// Mỗi ngôn ngữ mở hộp đều được ghi nhận âm thanh mô tả còn tốt hay không, lần sau không cần mở lại.
 // Ngôn ngữ lỗi trên bảng nhưng không có trong danh sách: không đụng tới, chỉ báo.
 // Trả về đoạn báo cáo để gộp vào thông báo cuối ('' nếu không có gì để báo).
 async function autoFixBeforeRun(tab, btn) {
@@ -743,11 +781,12 @@ async function autoFixBeforeRun(tab, btn) {
     // Ngôn ngữ lỗi trên bảng nhưng chưa có trong danh sách
     const extraErrors = rows.filter(r => r.status === 'error' && r.name && !selectedLangs.some(item => findRowOfItem([r], item)));
 
-    // Ngôn ngữ cần mở hộp: âm thanh chính lỗi; hoặc mọi dòng nếu có file mô tả (âm thanh mô tả lỗi không hiện trên bảng)
+    // Ngôn ngữ cần mở hộp: âm thanh chính lỗi; hoặc có file mô tả mà chưa ghi nhận âm thanh mô tả tốt
+    // (âm thanh mô tả không hiện trên bảng). Ngôn ngữ đã ghi nhận đủ từ lần mở trước thì không mở lại.
     const checks = [];
     selectedLangs.forEach(item => {
         const row = findRowOfItem(rows, item);
-        if (row && (row.status === 'error' || descAudioFile)) checks.push({ item, row });
+        if (row && (row.status === 'error' || (descAudioFile && item.descVideoId !== videoId))) checks.push({ item, row });
     });
 
     const list = (arr, fn) => arr.map(e => `• ${e.name}${fn ? fn(e) : ''}`).join('\n');
@@ -772,11 +811,16 @@ async function autoFixBeforeRun(tab, btn) {
                 response = { success: false, error: e.message };
             }
             if (stopReason) break;
+            if (response && response.success) {
+                // Ghi nhận trạng thái âm thanh mô tả vừa đọc trong hộp: còn tốt → đánh dấu "Mô tả", lúc thêm file sẽ bỏ qua;
+                // lỗi / không có / bị xoá theo âm thanh chính → bỏ đánh dấu để thêm lại
+                setDescState(item, videoId, response.action === 'main' || response.action === 'desc' ? 'none' : response.desc);
+                saveSelectedLangs();
+                renderLangList();
+            }
             if (!response || !response.success) {
                 failed.push(`• ${row.name}: ${response ? response.error : 'Không nhận được phản hồi từ trang'}`);
             } else if (response.action === 'main' || response.action === 'desc') {
-                // Âm thanh mô tả đã mất (xoá trực tiếp hoặc xoá theo âm thanh chính) → cần thêm lại
-                if (item.descVideoId === videoId) item.descVideoId = null;
                 if (response.action === 'main') mainDone++; else descDone++;
                 await new Promise(resolve => setTimeout(resolve, 2000));
             } else if (response.action === 'quick') {
@@ -786,9 +830,8 @@ async function autoFixBeforeRun(tab, btn) {
             }
         }
 
+        // Xoá qua hộp không làm bảng hiển thị sai nên không cần tải lại trang trước khi xoá nhanh
         if (quick.length && !stopReason) {
-            btn.textContent = '⏹ Dừng (Auto Fix: tải lại trang...)';
-            await reloadTranslationsTab(tab.id, videoId);
             quickFailed = await quickDeletePasses(tab, quick.map(e => ({ name: e.name, label: e.row.label })), btn);
         }
     } finally {
@@ -802,10 +845,10 @@ async function autoFixBeforeRun(tab, btn) {
     const quickDone = quick.length - quickFailed.length;
     const changed = mainDone + descDone + quickDone > 0;
 
-    // Tải lại trang để bảng hiện đúng, rồi cập nhật trạng thái danh sách trước khi thêm
+    // Đọc lại bảng để cập nhật trạng thái danh sách trước khi thêm (không tải lại trang: xoá qua hộp không làm bảng hiện sai,
+    // còn xoá nhanh thì quickDeletePasses đã tải lại trang sau mỗi lượt)
     if (changed && !stopReason) {
-        btn.textContent = '⏹ Dừng (Auto Fix: tải lại trang...)';
-        await reloadTranslationsTab(tab.id, videoId);
+        await new Promise(resolve => setTimeout(resolve, 1000));
         rows = await readRowsOfTab(tab.id);
         selectedLangs.forEach(item => applyRowToItem(item, findRowOfItem(rows, item)));
         saveSelectedLangs();
@@ -1008,6 +1051,13 @@ async function autoDeletePasses(tab, langs, btn) {
             if (!response || !response.success) {
                 throw new Error(response ? response.error : 'Không nhận được phản hồi từ trang');
             }
+            // Ghi nhận trạng thái âm thanh mô tả cho ngôn ngữ có trong danh sách
+            const item = selectedLangs.find(it => findRowOfItem([langs[i]], it));
+            if (item && response.result !== 'none') {
+                setDescState(item, videoId, response.result === 'quick' ? 'ok' : 'none');
+                saveSelectedLangs();
+                renderLangList();
+            }
             if (response.result === 'quick') quickList.push(langs[i]);
             else if (response.result === 'main') mainDone++;
             else if (response.result === 'desc') descDone++;
@@ -1026,10 +1076,8 @@ async function autoDeletePasses(tab, langs, btn) {
         } else if (!await isTabOnVideo(tab.id, videoId)) {
             notRun = [...notRun, ...quickList];
         } else {
-            // Tải lại trang trước khi xoá nhanh để bảng hiện đúng sau các lần xoá qua hộp ngôn ngữ
+            // Xoá qua hộp không làm bảng hiển thị sai nên không cần tải lại trang trước khi xoá nhanh
             try {
-                setDeleteProgress(btn, 'tải lại trang...');
-                await reloadTranslationsTab(tab.id, videoId);
                 quickFailed = await quickDeletePasses(tab, quickList, btn);
             } catch (e) {
                 quickFailed = quickList.map(r => `• ${r.name}: ${e.message}`);
