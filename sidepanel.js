@@ -147,7 +147,7 @@ function currentVideoId() {
 function needsWork(item) {
     if (!item.ytStatus) return item.status !== 'done' && item.status !== 'processing';
     if (item.ytStatus === 'none') return true;
-    return !!descAudioFile && item.descVideoId !== currentVideoId();
+    return !!descAudioFile && getDescState(item) !== 'ok';
 }
 
 // Ngôn ngữ đã có âm thanh gốc trên video (kể cả bị Removed / lỗi - vẫn thêm được âm thanh mô tả)
@@ -157,20 +157,28 @@ function hasMainAudio(item) {
 
 const DESC_NEEDS_MAIN_MSG = 'Âm thanh mô tả chỉ thêm được sau khi ngôn ngữ đã có âm thanh gốc.';
 
-// Trạng thái âm thanh mô tả đọc được khi mở hộp ngôn ngữ (không hiện trên bảng Bản dịch): 'ok' / 'error' / 'none'
-// Ghi theo video; descVideoId (đã có mô tả tốt) giữ khớp để needsWork dùng như cũ
+// Trạng thái âm thanh mô tả đọc được khi mở hộp ngôn ngữ (không hiện trên bảng Bản dịch): 'ok' / 'error' / 'none'.
+// Chỉ giữ trong phiên (đóng / mở lại side panel thì về Unknown), ghi theo video + mã ngôn ngữ.
+const descStates = new Map();
+// Ngôn ngữ vừa xoá âm thanh gốc trong hộp: coi là Chưa có ngay, kể cả khi bảng Bản dịch chưa kịp bỏ trạng thái lỗi
+const mainDeleted = new Set();
+const stateKey = (item, videoId) => `${videoId}|${item.code}`;
+
 function setDescState(item, videoId, state) {
-    item.descState = state;
-    item.descStateVideoId = videoId;
-    if (state === 'ok') item.descVideoId = videoId;
-    else if (item.descVideoId === videoId) item.descVideoId = null;
+    if (state === 'ok' || state === 'error' || state === 'none') descStates.set(stateKey(item, videoId), state);
 }
 
-// null = chưa mở hộp ngôn ngữ này nên chưa biết
+// null = chưa mở hộp ngôn ngữ này trong phiên nên chưa biết
 function getDescState(item) {
-    const videoId = currentVideoId();
-    if (item.descStateVideoId === videoId && item.descState) return item.descState;
-    return item.descVideoId && item.descVideoId === videoId ? 'ok' : null;
+    return descStates.get(stateKey(item, currentVideoId())) || null;
+}
+
+// Vừa xoá âm thanh gốc trong hộp → cột Gốc thành Chưa có ngay
+function markMainDeleted(item, videoId) {
+    mainDeleted.add(stateKey(item, videoId));
+    item.status = 'pending';
+    item.ytStatus = 'none';
+    item.ytText = '';
 }
 
 const DESC_BADGES = {
@@ -563,11 +571,8 @@ async function addDubForLang(index, tabId = null) {
         }
 
         // Ghi nhận trạng thái âm thanh mô tả vừa thấy trong hộp ngôn ngữ
-        if (response.descState === 'present' || response.descState === 'added') {
-            setDescState(item, videoId, 'ok');
-        } else if (response.descState === 'skipped' && audioFile) {
-            setDescState(item, videoId, 'none'); // Hộp không có dòng âm thanh mô tả
-        }
+        setDescState(item, videoId, response.desc);
+        if (response.mainAdded) mainDeleted.delete(stateKey(item, videoId));
 
         if (response.onVideo && !response.mainAdded) {
             // Ngôn ngữ đã có trên video → lấy trạng thái thật từ bảng
@@ -786,7 +791,8 @@ async function autoFixBeforeRun(tab, btn) {
     const checks = [];
     selectedLangs.forEach(item => {
         const row = findRowOfItem(rows, item);
-        if (row && (row.status === 'error' || (descAudioFile && item.descVideoId !== videoId))) checks.push({ item, row });
+        const desc = descStates.get(stateKey(item, videoId));
+        if (row && (row.status === 'error' || (descAudioFile && (!desc || desc === 'error')))) checks.push({ item, row });
     });
 
     const list = (arr, fn) => arr.map(e => `• ${e.name}${fn ? fn(e) : ''}`).join('\n');
@@ -812,9 +818,10 @@ async function autoFixBeforeRun(tab, btn) {
             }
             if (stopReason) break;
             if (response && response.success) {
-                // Ghi nhận trạng thái âm thanh mô tả vừa đọc trong hộp: còn tốt → đánh dấu "Mô tả", lúc thêm file sẽ bỏ qua;
-                // lỗi / không có / bị xoá theo âm thanh chính → bỏ đánh dấu để thêm lại
+                // Ghi nhận trạng thái vừa đọc trong hộp: mô tả còn tốt → Đã có, lúc thêm file sẽ bỏ qua;
+                // bị xoá (trực tiếp / theo âm thanh gốc) → Chưa có để thêm lại; xoá âm thanh gốc → cột Gốc thành Chưa có ngay
                 setDescState(item, videoId, response.action === 'main' || response.action === 'desc' ? 'none' : response.desc);
+                if (response.action === 'main') markMainDeleted(item, videoId);
                 saveSelectedLangs();
                 renderLangList();
             }
@@ -1053,8 +1060,9 @@ async function autoDeletePasses(tab, langs, btn) {
             }
             // Ghi nhận trạng thái âm thanh mô tả cho ngôn ngữ có trong danh sách
             const item = selectedLangs.find(it => findRowOfItem([langs[i]], it));
-            if (item && response.result !== 'none') {
-                setDescState(item, videoId, response.result === 'quick' ? 'ok' : 'none');
+            if (item) {
+                setDescState(item, videoId, response.result === 'main' || response.result === 'desc' ? 'none' : response.desc);
+                if (response.result === 'main') markMainDeleted(item, videoId);
                 saveSelectedLangs();
                 renderLangList();
             }
@@ -1363,6 +1371,12 @@ async function readRowOfLang(tabId, code, timeout) {
 // Gán trạng thái 1 dòng của bảng Bản dịch cho 1 ngôn ngữ trong danh sách. Trả về true nếu có thay đổi.
 // Đã xuất bản → Hoàn thành, đang xử lý → Đang xử lý, còn lại (chưa có / đã xoá / lỗi) → Chờ
 function applyRowToItem(item, row) {
+    // Vừa xoá âm thanh gốc trong hộp mà bảng vẫn còn báo lỗi → giữ Chưa có; bảng đã cập nhật thì thôi theo dõi
+    const key = stateKey(item, currentVideoId());
+    if (mainDeleted.has(key)) {
+        if (row && row.status === 'error') row = null;
+        else mainDeleted.delete(key);
+    }
     let newStatus = 'pending';
     if (row && row.status === 'published') newStatus = 'done';
     else if (row && row.status === 'processing') newStatus = 'processing';
@@ -1370,7 +1384,7 @@ function applyRowToItem(item, row) {
 
     const changed = item.status !== newStatus || (item.ytText || '') !== newYtText;
     item.status = newStatus;
-    item.ytStatus = row ? row.status : null;
+    item.ytStatus = row ? row.status : 'none'; // Không có dòng trên bảng = chưa có âm thanh gốc
     item.ytText = newYtText;
     return changed;
 }

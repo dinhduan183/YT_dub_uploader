@@ -39,7 +39,7 @@ function handleMessage(request, _sender, sendResponse) {
 
     if (request.action === "delete_error_audio_auto") {
         deleteErrorAudioAuto(request.langName)
-            .then((result) => sendResponse({ success: true, result: result }))
+            .then((result) => sendResponse({ success: true, ...result }))
             .catch((error) => {
                 console.error(error);
                 sendResponse({ success: false, error: error.message });
@@ -277,7 +277,7 @@ async function addSingleLanguage(code, name, nameVn, audio, descAudio, rowLabel,
         await deleteTrackInDialog('descriptive-audio');
         await saveLanguageDialog();
         showNotification('Đã xoá âm thanh mô tả lỗi', nameVn);
-        return { onVideo, mainAdded: false, descState: 'deleted' };
+        return { onVideo, mainAdded: false, descState: 'deleted', desc: 'none' };
     }
 
     // BƯỚC 4: Dòng Audio còn nút "Add" = chưa có âm thanh gốc
@@ -290,7 +290,8 @@ async function addSingleLanguage(code, name, nameVn, audio, descAudio, rowLabel,
         // Chưa chọn file gốc → để hộp tải mở cho người dùng tự chọn
         if (!audio) {
             showNotification(nameVn, code);
-            return { onVideo, mainAdded, descState: 'skipped' };
+            const desc = findVisible('#language-details-source-label-descriptive-audio') ? 'ok' : 'none';
+            return { onVideo, mainAdded, descState: 'skipped', desc };
         }
         await uploadAudio('main', audio, 'âm thanh gốc');
         mainAdded = true;
@@ -315,7 +316,8 @@ async function addSingleLanguage(code, name, nameVn, audio, descAudio, rowLabel,
 
     // Hiển thị notification
     showNotification(nameVn, code);
-    return { onVideo, mainAdded, descState };
+    // desc: trạng thái âm thanh mô tả sau lần mở hộp này ('ok' / 'none'; lỗi đã xử lý ở bước 3b)
+    return { onVideo, mainAdded, descState, desc: descState === 'present' || descState === 'added' ? 'ok' : 'none' };
 }
 
 // Mở hộp ngôn ngữ của 1 ngôn ngữ đã có trên video bằng cách bấm tên ở bảng Bản dịch
@@ -348,6 +350,7 @@ async function deleteErrorAudio(langName) {
 // - Chính lỗi, mô tả lỗi / không có → xoá âm thanh chính trong hộp (mô tả xoá theo) → 'main'
 // - Chính còn tốt / không có, mô tả lỗi → xoá âm thanh mô tả trong hộp, giữ âm thanh chính → 'desc'
 // - Không có gì lỗi → đóng hộp → 'none'
+// Trả về { result, desc }: desc = trạng thái âm thanh mô tả lúc mở hộp ('ok' / 'error' / 'none')
 async function deleteErrorAudioAuto(langName) {
     console.log(`Auto deleting error audio: ${langName}`);
     window.manualDubAbort = null;
@@ -374,7 +377,7 @@ async function deleteErrorAudioAuto(langName) {
     } else {
         await closeOpenDialogs();
     }
-    return result;
+    return { result, desc: !descExists ? 'none' : descErr ? 'error' : 'ok' };
 }
 
 // Auto Fix (Chạy tất cả): mở hộp 1 lần, đọc trạng thái rồi xoá luôn nếu có file để thêm lại.
